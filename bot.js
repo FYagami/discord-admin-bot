@@ -202,8 +202,10 @@ const commands = [
         .addStringOption(opt => opt.setName('message').setDescription('Welcome message (use {user} for mention)').setRequired(true)),
 
     new SlashCommandBuilder()
-        .setName('welcometest').setDescription('Test the welcome message')
+        .setName('removewelcome').setDescription('Remove the welcome message setup')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+
 
     // LOCKDOWN
     new SlashCommandBuilder()
@@ -641,7 +643,15 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply('✅ Test welcome message sent!');
         }
 
-        // /lockdown
+        // /removewelcome
+        if (commandName === 'removewelcome') {
+            if (!welcomeConfig.has(guild.id))
+                return interaction.editReply('❌ No welcome message is set up!');
+            welcomeConfig.delete(guild.id);
+            return interaction.editReply('✅ Welcome message has been removed!');
+        }
+
+
         if (commandName === 'lockdown') {
             const reason = interaction.options.getString('reason') || 'No reason provided';
             lockdownState.set(guild.id, true);
