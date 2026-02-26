@@ -265,7 +265,84 @@ client.on('messageCreate', async (message) => {
 
     const guildId = message.guild.id;
 
-    if (message.content.toLowerCase() === '!lockdown') {
+    // yaga cash shortcut
+    if (message.content.toLowerCase() === 'yaga cash') {
+        const player = await getPlayer(message.author.id, message.author.username);
+        if (!player) return message.reply('❌ Could not load your profile!');
+
+        const winRate = (player.total_wins + player.total_losses) > 0
+            ? ((player.total_wins / (player.total_wins + player.total_losses)) * 100).toFixed(1)
+            : '0.0';
+
+        const embed = new EmbedBuilder()
+            .setTitle(`👛 ${message.author.username}'s Wallet`)
+            .setColor(0xF1C40F)
+            .setThumbnail(message.author.displayAvatarURL())
+            .addFields(
+                { name: '🪙 Tokens', value: `${player.tokens}`, inline: true },
+                { name: '🍀 Luck Points', value: `${player.luck_points}`, inline: true },
+                { name: '🏆 Wins', value: `${player.total_wins}`, inline: true },
+                { name: '💀 Losses', value: `${player.total_losses}`, inline: true },
+                { name: '📊 Win Rate', value: `${winRate}%`, inline: true }
+            )
+            .setTimestamp();
+        return message.channel.send({ embeds: [embed] });
+    }
+
+
+    if (message.content.toLowerCase().startsWith('yaga cf')) {
+        const userId = message.author.id;
+        const args = message.content.split(' ');
+        // args[0] = yaga, args[1] = cf, args[2] = bet/all, args[3] = optional side
+        const betArg = args[2];
+        const sideArg = (args[3] || '').toLowerCase();
+        const side = (sideArg === 'tails' || sideArg === 't') ? 'tails' : 'heads'; // h or heads or default = heads
+
+        if (!betArg) return message.reply('❌ Usage: `yaga cf <amount or all>` e.g. `yaga cf 500` or `yaga cf all`');
+
+        const player = await getPlayer(userId, message.author.username);
+        if (!player) return message.reply('❌ Could not load your profile!');
+        if (player.tokens <= 0) return message.reply('❌ You have no tokens! Use `/daily` to get some.');
+
+        const bet = betArg.toLowerCase() === 'all' ? player.tokens : parseInt(betArg);
+        if (isNaN(bet) || bet < 1) return message.reply('❌ Invalid bet amount!');
+        if (player.tokens < bet) return message.reply(`❌ Not enough tokens! You only have **${player.tokens} 🪙**.`);
+
+        const luckBonus = Math.min(player.luck_points * 0.5, 10);
+        const roll = Math.random() * 100;
+        const flipResult = roll < 50 ? 'heads' : 'tails';
+        const won = flipResult === side;
+
+        const newTokens = won ? player.tokens + bet : player.tokens - bet;
+        const newLuck = Math.max(0, player.luck_points - 1);
+
+        await updatePlayer(userId, {
+            tokens: newTokens,
+            luck_points: newLuck,
+            total_wins: won ? player.total_wins + 1 : player.total_wins,
+            total_losses: won ? player.total_losses : player.total_losses + 1,
+            username: message.author.username
+        });
+
+        const embed = new EmbedBuilder()
+            .setTitle(won ? '🎉 You Won!' : '💀 You Lost!')
+            .setColor(won ? 0x2ECC71 : 0xFF0000)
+            .setDescription(
+                `The coin landed on **${flipResult === 'heads' ? '🔵 Heads' : '🔴 Tails'}**!\n` +
+                `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**` +
+                (side === 'heads' && !sideArg ? ' *(auto-selected)*' : '')
+            )
+            .addFields(
+                { name: won ? '💰 Winnings' : '💸 Lost', value: `${bet} 🪙 tokens`, inline: true },
+                { name: '🏦 Balance', value: `${newTokens} 🪙`, inline: true },
+                { name: '🍀 Luck Points', value: `${newLuck}`, inline: true }
+            )
+            .setFooter({ text: luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Use /pray for luck boost!' })
+            .setTimestamp();
+        return message.channel.send({ embeds: [embed] });
+    }
+
+
         if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
             return message.reply('❌ You need Administrator permission!');
         message.channel.send('⏳ Locking all text channels...');
