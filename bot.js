@@ -463,7 +463,7 @@ client.on('interactionCreate', async interaction => {
             const theme = interaction.options.getString('theme') || null;
             const pingStr = interaction.options.getString('ping') || null;
 
-            const scheduledTime = new Date(dateStr);
+            const scheduledTime = new Date(dateStr + '+08:00');
             if (isNaN(scheduledTime.getTime()))
                 return interaction.editReply('❌ Invalid date! Use format: `YYYY-MM-DD HH:MM` e.g. `2026-02-28 20:30`');
             if (scheduledTime <= new Date())
