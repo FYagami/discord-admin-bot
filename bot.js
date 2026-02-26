@@ -107,8 +107,79 @@ async function getLeaderboard() {
 }
 
 // =============================================
-// SLASH COMMANDS
+// SUPABASE HELPERS — MODERATION LOGS
 // =============================================
+async function logModAction({ guildId, guildName, action, moderator, target, reason, duration = null }) {
+    const { error } = await supabase.from('mod_logs').insert([{
+        guild_id: guildId,
+        guild_name: guildName,
+        action,
+        moderator_id: moderator.id,
+        moderator_tag: moderator.tag,
+        target_id: target.id,
+        target_tag: target.tag,
+        reason,
+        duration,
+        created_at: new Date().toISOString()
+    }]);
+    if (error) console.error('Mod log error:', error.message);
+}
+
+async function getModLogs(guildId, targetId = null) {
+    let query = supabase.from('mod_logs').select('*').eq('guild_id', guildId).order('created_at', { ascending: false }).limit(20);
+    if (targetId) query = query.eq('target_id', targetId);
+    const { data, error } = await query;
+    if (error) { console.error('Get mod logs error:', error.message); return []; }
+    return data || [];
+}
+
+// =============================================
+// SUPABASE HELPERS — STICKY MESSAGES
+// =============================================
+async function setSticky(guildId, channelId, message) {
+    const { error } = await supabase.from('sticky_messages').upsert([{
+        guild_id: guildId,
+        channel_id: channelId,
+        message,
+        last_message_id: null
+    }], { onConflict: 'channel_id' });
+    if (error) console.error('Set sticky error:', error.message);
+}
+
+async function getSticky(channelId) {
+    const { data, error } = await supabase.from('sticky_messages').select('*').eq('channel_id', channelId).single();
+    if (error) return null;
+    return data;
+}
+
+async function updateStickyLastMessage(channelId, messageId) {
+    const { error } = await supabase.from('sticky_messages').update({ last_message_id: messageId }).eq('channel_id', channelId);
+    if (error) console.error('Update sticky error:', error.message);
+}
+
+async function deleteSticky(channelId) {
+    const { error } = await supabase.from('sticky_messages').delete().eq('channel_id', channelId);
+    if (error) console.error('Delete sticky error:', error.message);
+}
+
+// =============================================
+// SUPABASE HELPERS — ANNOUNCEMENTS
+// =============================================
+async function setAnnouncementChannel(guildId, channelId) {
+    const { error } = await supabase.from('announcement_config').upsert([{
+        guild_id: guildId,
+        channel_id: channelId
+    }], { onConflict: 'guild_id' });
+    if (error) console.error('Set announcement channel error:', error.message);
+}
+
+async function getAnnouncementChannel(guildId) {
+    const { data, error } = await supabase.from('announcement_config').select('*').eq('guild_id', guildId).single();
+    if (error) return null;
+    return data;
+}
+
+
 const commands = [
     // ROLE
     new SlashCommandBuilder()
@@ -197,7 +268,74 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addStringOption(opt => opt.setName('id').setDescription('Schedule ID to cancel').setRequired(true)),
 
-    // INFO
+    // STICKY MESSAGES
+    new SlashCommandBuilder()
+        .setName('setsticky').setDescription('Set a sticky message in a channel')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addChannelOption(opt => opt.setName('channel').setDescription('Channel for sticky message').setRequired(true))
+        .addStringOption(opt => opt.setName('message').setDescription('The sticky message content').setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('removesticky').setDescription('Remove sticky message from a channel')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addChannelOption(opt => opt.setName('channel').setDescription('Channel to remove sticky from').setRequired(true)),
+
+    // ANNOUNCEMENTS
+    new SlashCommandBuilder()
+        .setName('setannouncechannel').setDescription('Set the announcement channel for this server')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addChannelOption(opt => opt.setName('channel').setDescription('Announcement channel').setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('announce').setDescription('Send an announcement to the announcement channel')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addStringOption(opt => opt.setName('message').setDescription('Announcement message').setRequired(true))
+        .addStringOption(opt => opt.setName('ping').setDescription('Who to ping e.g. everyone, here, Member').setRequired(false))
+        .addStringOption(opt => opt.setName('title').setDescription('Announcement title').setRequired(false)),
+
+    // MOD LOGS
+    new SlashCommandBuilder()
+        .setName('modlogs').setDescription('View moderation logs')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addUserOption(opt => opt.setName('user').setDescription('Filter logs by user').setRequired(false)),
+
+
+    new SlashCommandBuilder()
+        .setName('ban').setDescription('Ban a member from the server')
+        .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
+        .addUserOption(opt => opt.setName('user').setDescription('The member to ban').setRequired(true))
+        .addStringOption(opt => opt.setName('reason').setDescription('Reason for ban').setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('kick').setDescription('Kick a member from the server')
+        .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers)
+        .addUserOption(opt => opt.setName('user').setDescription('The member to kick').setRequired(true))
+        .addStringOption(opt => opt.setName('reason').setDescription('Reason for kick').setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('mute').setDescription('Mute a member (remove speak & send permissions)')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+        .addUserOption(opt => opt.setName('user').setDescription('The member to mute').setRequired(true))
+        .addStringOption(opt => opt.setName('reason').setDescription('Reason for mute').setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('unmute').setDescription('Unmute a member')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+        .addUserOption(opt => opt.setName('user').setDescription('The member to unmute').setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('timeout').setDescription('Timeout a member for a duration')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+        .addUserOption(opt => opt.setName('user').setDescription('The member to timeout').setRequired(true))
+        .addIntegerOption(opt => opt.setName('duration').setDescription('Duration in minutes').setRequired(true).setMinValue(1).setMaxValue(40320))
+        .addStringOption(opt => opt.setName('reason').setDescription('Reason for timeout').setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('untimeout').setDescription('Remove timeout from a member')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+        .addUserOption(opt => opt.setName('user').setDescription('The member to untimeout').setRequired(true)),
+
+
     new SlashCommandBuilder()
         .setName('serverinfo').setDescription('Show server information')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -343,6 +481,7 @@ client.on('messageCreate', async (message) => {
     }
 
 
+    if (message.content.toLowerCase() === '!lockdown') {
         if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
             return message.reply('❌ You need Administrator permission!');
         message.channel.send('⏳ Locking all text channels...');
@@ -372,8 +511,23 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
-    // Anti-spam
-    if (!antispamEnabled.get(guildId)) return;
+    // Sticky message handler
+    const sticky = await getSticky(message.channel.id);
+    if (sticky) {
+        try {
+            if (sticky.last_message_id) {
+                const oldMsg = await message.channel.messages.fetch(sticky.last_message_id).catch(() => null);
+                if (oldMsg) await oldMsg.delete().catch(() => {});
+            }
+            const embed = new EmbedBuilder().setColor(0xF1C40F)
+                .setDescription(`📌 ${sticky.message}`)
+                .setFooter({ text: 'Sticky Message' });
+            const sent = await message.channel.send({ embeds: [embed] });
+            await updateStickyLastMessage(message.channel.id, sent.id);
+        } catch (err) { console.error('Sticky error:', err.message); }
+    }
+
+
     const userId = message.author.id;
     const now = Date.now();
     if (!spamTracker.has(userId)) { spamTracker.set(userId, { count: 1, firstMessage: now }); return; }
@@ -428,9 +582,12 @@ client.on('interactionCreate', async interaction => {
                     { name: '👋 Welcome', value: '`/setwelcome` — Set welcome\n`/welcometest` — Test welcome' },
                     { name: '🔒 Text Lockdown', value: '`/lockdown` or `!lockdown` — Lock text channels\n`/unlock` or `!unlock` — Unlock text channels' },
                     { name: '🔊 Voice Lock', value: '`/lockvc` — Lock specific VC\n`/unlockvc` — Unlock specific VC\n`/lockallvc` — Lock all VCs\n`/unlockallvc` — Unlock all VCs' },
-                    { name: '🚫 Anti-Spam', value: '`/antispam` — Enable/disable anti-spam' },
+                    { name: '🔨 Moderation', value: '`/ban` — Ban a member\n`/kick` — Kick a member\n`/mute` — Mute a member\n`/unmute` — Unmute a member\n`/timeout` — Timeout a member\n`/untimeout` — Remove timeout' },
+
                     { name: '📅 Scheduled Messages', value: '`/schedule_msg` — Schedule a message\n`/list_schedules` — List this server schedules\n`/list_all_schedules` — List all schedules\n`/cancel_schedule` — Cancel a schedule' },
-                    { name: '📊 Info', value: '`/serverinfo` — Server info\n`/userinfo` — User info' },
+                    { name: '📌 Sticky & Announcements', value: '`/setsticky` — Set sticky message\n`/removesticky` — Remove sticky\n`/setannouncechannel` — Set announce channel\n`/announce` — Send announcement' },
+                    { name: '📋 Mod Logs', value: '`/modlogs` — View moderation logs' },
+
                     { name: '🎮 Games & Economy', value: '`/daily` — Claim 100 tokens daily\n`/wallet` — Check tokens & luck\n`/coinflip` — Bet tokens on a coin flip\n`/transfer` — Send tokens to a player\n`/pray` — Pray for luck points (every 4h)\n`/leaderboard` — Top 10 richest players' }
                 )
                 .setFooter({ text: 'Admin commands require Administrator permission' })
@@ -674,7 +831,135 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply(`✅ Cancelled schedule **${id}** — "${data.title}"`);
         }
 
-        // /serverinfo
+        // /ban
+        if (commandName === 'ban') {
+            const user = interaction.options.getUser('user');
+            const reason = interaction.options.getString('reason') || 'No reason provided';
+            const member = await guild.members.fetch(user.id).catch(() => null);
+            if (!member) return interaction.editReply('❌ Member not found!');
+            if (!member.bannable) return interaction.editReply('❌ I cannot ban this member! They may have a higher role than me.');
+            await member.ban({ reason });
+            await logModAction({ guildId: guild.id, guildName: guild.name, action: 'BAN', moderator: interaction.user, target: user, reason });
+            const embed = new EmbedBuilder().setTitle('🔨 Member Banned')
+.setColor(0xFF0000)
+                .setThumbnail(user.displayAvatarURL())
+                .addFields(
+                    { name: '👤 User', value: `${user} (${user.tag})`, inline: true },
+                    { name: '🛡️ By', value: `${interaction.user}`, inline: true },
+                    { name: '📋 Reason', value: reason }
+                ).setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // /kick
+        if (commandName === 'kick') {
+            const user = interaction.options.getUser('user');
+            const reason = interaction.options.getString('reason') || 'No reason provided';
+            const member = await guild.members.fetch(user.id).catch(() => null);
+            if (!member) return interaction.editReply('❌ Member not found!');
+            if (!member.kickable) return interaction.editReply('❌ I cannot kick this member! They may have a higher role than me.');
+            await member.kick(reason);
+            await logModAction({ guildId: guild.id, guildName: guild.name, action: 'KICK', moderator: interaction.user, target: user, reason });
+            const embed = new EmbedBuilder().setTitle('👢 Member Kicked')
+.setColor(0xFF8C00)
+                .setThumbnail(user.displayAvatarURL())
+                .addFields(
+                    { name: '👤 User', value: `${user} (${user.tag})`, inline: true },
+                    { name: '🛡️ By', value: `${interaction.user}`, inline: true },
+                    { name: '📋 Reason', value: reason }
+                ).setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // /mute
+        if (commandName === 'mute') {
+            const user = interaction.options.getUser('user');
+            const reason = interaction.options.getString('reason') || 'No reason provided';
+            const member = await guild.members.fetch(user.id).catch(() => null);
+            if (!member) return interaction.editReply('❌ Member not found!');
+
+            // Find or create Muted role
+            let mutedRole = guild.roles.cache.find(r => r.name === 'Muted');
+            if (!mutedRole) {
+                mutedRole = await guild.roles.create({ name: 'Muted', color: 0x808080, reason: 'Mute system role' });
+                // Apply to all channels
+                for (const [, channel] of guild.channels.cache) {
+                    try { await channel.permissionOverwrites.edit(mutedRole, { SendMessages: false, Speak: false, AddReactions: false }); } catch {}
+                }
+            }
+
+            if (member.roles.cache.has(mutedRole.id))
+                return interaction.editReply(`❌ ${user} is already muted!`);
+
+            await member.roles.add(mutedRole, reason);
+            await logModAction({ guildId: guild.id, guildName: guild.name, action: 'MUTE', moderator: interaction.user, target: user, reason });
+            const embed = new EmbedBuilder().setTitle('🔇 Member Muted')
+.setColor(0x808080)
+                .setThumbnail(user.displayAvatarURL())
+                .addFields(
+                    { name: '👤 User', value: `${user} (${user.tag})`, inline: true },
+                    { name: '🛡️ By', value: `${interaction.user}`, inline: true },
+                    { name: '📋 Reason', value: reason }
+                ).setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // /unmute
+        if (commandName === 'unmute') {
+            const user = interaction.options.getUser('user');
+            const member = await guild.members.fetch(user.id).catch(() => null);
+            if (!member) return interaction.editReply('❌ Member not found!');
+            const mutedRole = guild.roles.cache.find(r => r.name === 'Muted');
+            if (!mutedRole || !member.roles.cache.has(mutedRole.id))
+                return interaction.editReply(`❌ ${user} is not muted!`);
+            await member.roles.remove(mutedRole);
+            const embed = new EmbedBuilder().setTitle('🔊 Member Unmuted').setColor(0x2ECC71)
+                .addFields(
+                    { name: '👤 User', value: `${user} (${user.tag})`, inline: true },
+                    { name: '🛡️ By', value: `${interaction.user}`, inline: true }
+                ).setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // /timeout
+        if (commandName === 'timeout') {
+            const user = interaction.options.getUser('user');
+            const duration = interaction.options.getInteger('duration');
+            const reason = interaction.options.getString('reason') || 'No reason provided';
+            const member = await guild.members.fetch(user.id).catch(() => null);
+            if (!member) return interaction.editReply('❌ Member not found!');
+            if (!member.moderatable) return interaction.editReply('❌ I cannot timeout this member!');
+            await member.timeout(duration * 60 * 1000, reason);
+            await logModAction({ guildId: guild.id, guildName: guild.name, action: 'TIMEOUT', moderator: interaction.user, target: user, reason, duration: `${duration} minutes` });
+
+            const embed = new EmbedBuilder().setTitle('⏱️ Member Timed Out').setColor(0xF39C12)
+                .setThumbnail(user.displayAvatarURL())
+                .addFields(
+                    { name: '👤 User', value: `${user} (${user.tag})`, inline: true },
+                    { name: '🛡️ By', value: `${interaction.user}`, inline: true },
+                    { name: '⏰ Duration', value: `${duration} minute(s)`, inline: true },
+                    { name: '🕐 Until', value: `<t:${until}:F>`, inline: true },
+                    { name: '📋 Reason', value: reason }
+                ).setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // /untimeout
+        if (commandName === 'untimeout') {
+            const user = interaction.options.getUser('user');
+            const member = await guild.members.fetch(user.id).catch(() => null);
+            if (!member) return interaction.editReply('❌ Member not found!');
+            if (!member.isCommunicationDisabled()) return interaction.editReply(`❌ ${user} is not timed out!`);
+            await member.timeout(null);
+            const embed = new EmbedBuilder().setTitle('✅ Timeout Removed').setColor(0x2ECC71)
+                .addFields(
+                    { name: '👤 User', value: `${user} (${user.tag})`, inline: true },
+                    { name: '🛡️ By', value: `${interaction.user}`, inline: true }
+                ).setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+
         if (commandName === 'serverinfo') {
             const embed = new EmbedBuilder().setTitle(`📊 ${guild.name}`).setColor(0x3498DB).setThumbnail(guild.iconURL())
                 .addFields(
@@ -892,7 +1177,93 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /leaderboard
+        // /setsticky
+        if (commandName === 'setsticky') {
+            const channel = interaction.options.getChannel('channel');
+            const message = interaction.options.getString('message');
+            await setSticky(guild.id, channel.id, message);
+            const embed = new EmbedBuilder().setTitle('📌 Sticky Message Set').setColor(0xF1C40F)
+                .addFields(
+                    { name: '📢 Channel', value: `${channel}`, inline: true },
+                    { name: '💬 Message', value: message }
+                ).setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // /removesticky
+        if (commandName === 'removesticky') {
+            const channel = interaction.options.getChannel('channel');
+            await deleteSticky(channel.id);
+            return interaction.editReply(`✅ Sticky message removed from ${channel}.`);
+        }
+
+        // /setannouncechannel
+        if (commandName === 'setannouncechannel') {
+            const channel = interaction.options.getChannel('channel');
+            await setAnnouncementChannel(guild.id, channel.id);
+            const embed = new EmbedBuilder().setTitle('📣 Announcement Channel Set').setColor(0x3498DB)
+                .addFields({ name: '📢 Channel', value: `${channel}` }).setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // /announce
+        if (commandName === 'announce') {
+            const message = interaction.options.getString('message');
+            const pingStr = interaction.options.getString('ping') || null;
+            const title = interaction.options.getString('title') || '📣 Announcement';
+
+            const config = await getAnnouncementChannel(guild.id);
+            if (!config) return interaction.editReply('❌ No announcement channel set! Use `/setannouncechannel` first.');
+
+            const channel = guild.channels.cache.get(config.channel_id);
+            if (!channel) return interaction.editReply('❌ Announcement channel not found! Please set it again.');
+
+            let pingText = '';
+            if (pingStr) {
+                const parts = pingStr.split(',').map(r => r.trim());
+                for (const p of parts) {
+                    if (p.toLowerCase() === 'everyone') pingText += '@everyone ';
+                    else if (p.toLowerCase() === 'here') pingText += '@here ';
+                    else {
+                        const role = guild.roles.cache.find(r => r.name.toLowerCase() === p.toLowerCase());
+                        if (role) pingText += `<@&${role.id}> `;
+                    }
+                }
+            }
+
+            const embed = new EmbedBuilder().setTitle(title).setColor(0x3498DB)
+                .setDescription(message)
+                .addFields({ name: '📢 By', value: `${interaction.user}` })
+                .setTimestamp();
+
+            await channel.send({ content: pingText.trim() || null, embeds: [embed] });
+            return interaction.editReply(`✅ Announcement sent to ${channel}!`);
+        }
+
+        // /modlogs
+        if (commandName === 'modlogs') {
+            const targetUser = interaction.options.getUser('user') || null;
+            const logs = await getModLogs(guild.id, targetUser?.id);
+            if (logs.length === 0) return interaction.editReply('📭 No moderation logs found.');
+
+            const actionEmoji = { BAN: '🔨', KICK: '👢', MUTE: '🔇', TIMEOUT: '⏱️', UNMUTE: '🔊', UNTIMEOUT: '✅' };
+            const embed = new EmbedBuilder()
+                .setTitle(targetUser ? `📋 Mod Logs — ${targetUser.tag}` : `📋 Mod Logs — ${guild.name}`)
+                .setColor(0xFF8C00)
+                .setTimestamp();
+
+            for (const log of logs.slice(0, 10)) {
+                const emoji = actionEmoji[log.action] || '⚠️';
+                const date = Math.floor(new Date(log.created_at).getTime() / 1000);
+                embed.addFields({
+                    name: `${emoji} ${log.action} — ${log.target_tag}`,
+                    value: `👮 By: ${log.moderator_tag}\n📋 Reason: ${log.reason}${log.duration ? `\n⏰ Duration: ${log.duration}` : ''}\n🕐 <t:${date}:R>`
+                });
+            }
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+
         if (commandName === 'leaderboard') {
             const top = await getLeaderboard();
             if (top.length === 0) return interaction.editReply('📭 No players found yet!');
