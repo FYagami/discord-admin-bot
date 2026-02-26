@@ -15,7 +15,6 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
-// Supabase client
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const spamTracker = new Collection();
@@ -28,7 +27,7 @@ const antispamEnabled = new Collection();
 let scheduleCounter = 1;
 
 // =============================================
-// SUPABASE HELPERS
+// SUPABASE HELPERS — SCHEDULES
 // =============================================
 async function saveSchedule(schedule) {
     const { error } = await supabase.from('schedules').insert([{
@@ -66,6 +65,44 @@ async function getSchedulesByGuild(guildId) {
 async function getAllSchedules() {
     const { data, error } = await supabase.from('schedules').select('*');
     if (error) { console.error('Supabase query error:', error.message); return []; }
+    return data || [];
+}
+
+// =============================================
+// SUPABASE HELPERS — GAME (tokens, luck)
+// =============================================
+
+// Get or create player profile
+async function getPlayer(userId, username) {
+    const { data, error } = await supabase.from('players').select('*').eq('user_id', userId).single();
+    if (error && error.code === 'PGRST116') {
+        // Not found, create new
+        const newPlayer = {
+            user_id: userId,
+            username: username,
+            tokens: 0,
+            luck_points: 0,
+            last_daily: null,
+            last_pray: null,
+            total_wins: 0,
+            total_losses: 0
+        };
+        const { data: created, error: createErr } = await supabase.from('players').insert([newPlayer]).select().single();
+        if (createErr) { console.error('Create player error:', createErr.message); return null; }
+        return created;
+    }
+    if (error) { console.error('Get player error:', error.message); return null; }
+    return data;
+}
+
+async function updatePlayer(userId, updates) {
+    const { error } = await supabase.from('players').update(updates).eq('user_id', userId);
+    if (error) console.error('Update player error:', error.message);
+}
+
+async function getLeaderboard() {
+    const { data, error } = await supabase.from('players').select('*').order('tokens', { ascending: false }).limit(10);
+    if (error) { console.error('Leaderboard error:', error.message); return []; }
     return data || [];
 }
 
@@ -143,7 +180,7 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addChannelOption(opt => opt.setName('channel').setDescription('Channel to send the message in').setRequired(true))
         .addStringOption(opt => opt.setName('title').setDescription('Title e.g. COLLAB WITH FTU CLAN').setRequired(true))
-        .addStringOption(opt => opt.setName('date').setDescription('Date and time e.g. 2026-02-28 20:30').setRequired(true))
+        .addStringOption(opt => opt.setName('date').setDescription('Date and time e.g. 2026-02-28 20:30 (PHT)').setRequired(true))
         .addStringOption(opt => opt.setName('theme').setDescription('Theme e.g. VALENTINES THEME').setRequired(false))
         .addStringOption(opt => opt.setName('ping').setDescription('Roles to ping e.g. everyone, Member').setRequired(false)),
 
@@ -169,6 +206,40 @@ const commands = [
         .setName('userinfo').setDescription('Show info about a user')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addUserOption(opt => opt.setName('user').setDescription('The user').setRequired(false)),
+
+    // ==================
+    // GAME COMMANDS
+    // ==================
+
+    // Daily reward
+    new SlashCommandBuilder()
+        .setName('daily').setDescription('Claim your daily 100 tokens reward 🎁'),
+
+    // Wallet / profile
+    new SlashCommandBuilder()
+        .setName('wallet').setDescription('Check your tokens and luck points 👛')
+        .addUserOption(opt => opt.setName('user').setDescription('Check another player').setRequired(false)),
+
+    // Coin flip
+    new SlashCommandBuilder()
+        .setName('coinflip').setDescription('Flip a coin and bet your tokens! 🪙')
+        .addStringOption(opt => opt.setName('side').setDescription('Heads or Tails?').setRequired(true)
+            .addChoices({ name: '🔵 Heads', value: 'heads' }, { name: '🔴 Tails', value: 'tails' }))
+        .addIntegerOption(opt => opt.setName('bet').setDescription('How many tokens to bet').setRequired(true).setMinValue(1)),
+
+    // Transfer tokens
+    new SlashCommandBuilder()
+        .setName('transfer').setDescription('Send tokens to another player 💸')
+        .addUserOption(opt => opt.setName('user').setDescription('Player to send tokens to').setRequired(true))
+        .addIntegerOption(opt => opt.setName('amount').setDescription('How many tokens to send').setRequired(true).setMinValue(1)),
+
+    // Pray for luck
+    new SlashCommandBuilder()
+        .setName('pray').setDescription('Pray to the gods for luck points 🙏 (once every 4 hours)'),
+
+    // Leaderboard
+    new SlashCommandBuilder()
+        .setName('leaderboard').setDescription('Top 10 richest players 🏆'),
 
     // HELP
     new SlashCommandBuilder()
@@ -269,6 +340,7 @@ client.on('interactionCreate', async interaction => {
     const { commandName, guild } = interaction;
 
     try {
+
         // /help
         if (commandName === 'help') {
             const embed = new EmbedBuilder()
@@ -281,9 +353,10 @@ client.on('interactionCreate', async interaction => {
                     { name: '🔊 Voice Lock', value: '`/lockvc` — Lock specific VC\n`/unlockvc` — Unlock specific VC\n`/lockallvc` — Lock all VCs\n`/unlockallvc` — Unlock all VCs' },
                     { name: '🚫 Anti-Spam', value: '`/antispam` — Enable/disable anti-spam' },
                     { name: '📅 Scheduled Messages', value: '`/schedule_msg` — Schedule a message\n`/list_schedules` — List this server schedules\n`/list_all_schedules` — List all schedules\n`/cancel_schedule` — Cancel a schedule' },
-                    { name: '📊 Info', value: '`/serverinfo` — Server info\n`/userinfo` — User info' }
+                    { name: '📊 Info', value: '`/serverinfo` — Server info\n`/userinfo` — User info' },
+                    { name: '🎮 Games & Economy', value: '`/daily` — Claim 100 tokens daily\n`/wallet` — Check tokens & luck\n`/coinflip` — Bet tokens on a coin flip\n`/transfer` — Send tokens to a player\n`/pray` — Pray for luck points (every 4h)\n`/leaderboard` — Top 10 richest players' }
                 )
-                .setFooter({ text: 'All commands require Administrator permission' })
+                .setFooter({ text: 'Admin commands require Administrator permission' })
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
         }
@@ -463,6 +536,7 @@ client.on('interactionCreate', async interaction => {
             const theme = interaction.options.getString('theme') || null;
             const pingStr = interaction.options.getString('ping') || null;
 
+            // PHT = UTC+8
             const scheduledTime = new Date(dateStr + '+08:00');
             if (isNaN(scheduledTime.getTime()))
                 return interaction.editReply('❌ Invalid date! Use format: `YYYY-MM-DD HH:MM` e.g. `2026-02-28 20:30`');
@@ -477,7 +551,7 @@ client.on('interactionCreate', async interaction => {
             await saveSchedule(schedule);
 
             const embed = new EmbedBuilder()
-                .setTitle('📅 Message Scheduled!')
+                .setTitle('📅 Message Scheduled! (PHT)')
                 .setColor(0x2ECC71)
                 .addFields(
                     { name: 'ID', value: id, inline: true },
@@ -551,6 +625,216 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
+        // ==========================================
+        // GAME COMMANDS
+        // ==========================================
+
+        // /daily — claim 100 tokens once per day (resets midnight PHT)
+        if (commandName === 'daily') {
+            const userId = interaction.user.id;
+            const player = await getPlayer(userId, interaction.user.username);
+            if (!player) return interaction.editReply('❌ Could not load your profile!');
+
+            const now = new Date();
+            // Midnight PHT = UTC+8
+            const phtOffset = 8 * 60 * 60 * 1000;
+            const phtNow = new Date(now.getTime() + phtOffset);
+            const phtMidnight = new Date(Date.UTC(phtNow.getUTCFullYear(), phtNow.getUTCMonth(), phtNow.getUTCDate()) - phtOffset);
+
+            if (player.last_daily && new Date(player.last_daily) >= phtMidnight) {
+                // Calculate next midnight PHT
+                const nextMidnight = new Date(phtMidnight.getTime() + 24 * 60 * 60 * 1000);
+                const unixNext = Math.floor(nextMidnight.getTime() / 1000);
+                return interaction.editReply(`⏳ You already claimed your daily reward! Come back <t:${unixNext}:R>.`);
+            }
+
+            const reward = Math.floor(Math.random() * 4001) + 1000; // Random 1000–5000
+            await updatePlayer(userId, {
+                tokens: player.tokens + reward,
+                last_daily: now.toISOString(),
+                username: interaction.user.username
+            });
+
+            const embed = new EmbedBuilder()
+                .setTitle('🎁 Daily Reward Claimed!')
+                .setColor(0xF1C40F)
+                .setDescription(`You received **${reward} 🪙 tokens**!`)
+                .addFields(
+                    { name: '💰 New Balance', value: `${player.tokens + reward} tokens`, inline: true },
+                    { name: '🍀 Luck Points', value: `${player.luck_points}`, inline: true }
+                )
+                .setFooter({ text: 'Come back tomorrow for more!' })
+                .setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // /wallet — check tokens and stats
+        if (commandName === 'wallet') {
+            const targetUser = interaction.options.getUser('user') || interaction.user;
+            const player = await getPlayer(targetUser.id, targetUser.username);
+            if (!player) return interaction.editReply('❌ Could not load profile!');
+
+            const winRate = (player.total_wins + player.total_losses) > 0
+                ? ((player.total_wins / (player.total_wins + player.total_losses)) * 100).toFixed(1)
+                : '0.0';
+
+            const embed = new EmbedBuilder()
+                .setTitle(`👛 ${targetUser.username}'s Wallet`)
+                .setColor(0xF1C40F)
+                .setThumbnail(targetUser.displayAvatarURL())
+                .addFields(
+                    { name: '🪙 Tokens', value: `${player.tokens}`, inline: true },
+                    { name: '🍀 Luck Points', value: `${player.luck_points}`, inline: true },
+                    { name: '🏆 Wins', value: `${player.total_wins}`, inline: true },
+                    { name: '💀 Losses', value: `${player.total_losses}`, inline: true },
+                    { name: '📊 Win Rate', value: `${winRate}%`, inline: true }
+                )
+                .setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // /coinflip — bet tokens on heads or tails
+        if (commandName === 'coinflip') {
+            const userId = interaction.user.id;
+            const side = interaction.options.getString('side');
+            const bet = interaction.options.getInteger('bet');
+
+            const player = await getPlayer(userId, interaction.user.username);
+            if (!player) return interaction.editReply('❌ Could not load your profile!');
+
+            if (player.tokens < bet)
+                return interaction.editReply(`❌ You don't have enough tokens! You only have **${player.tokens} 🪙**.`);
+
+            // Luck points give a small boost to win chance (max +10%)
+            const luckBonus = Math.min(player.luck_points * 0.5, 10); // each luck point = +0.5%, max 10%
+            const winChance = 50 + luckBonus;
+            const roll = Math.random() * 100;
+            const flipResult = roll < 50 ? 'heads' : 'tails';
+            const won = flipResult === side;
+
+            let newTokens = won ? player.tokens + bet : player.tokens - bet;
+            // Consume 1 luck point per flip if they have any
+            let newLuck = Math.max(0, player.luck_points - 1);
+
+            await updatePlayer(userId, {
+                tokens: newTokens,
+                luck_points: newLuck,
+                total_wins: won ? player.total_wins + 1 : player.total_wins,
+                total_losses: won ? player.total_losses : player.total_losses + 1,
+                username: interaction.user.username
+            });
+
+            const embed = new EmbedBuilder()
+                .setTitle(won ? '🎉 You Won!' : '💀 You Lost!')
+                .setColor(won ? 0x2ECC71 : 0xFF0000)
+                .setDescription(
+                    `The coin landed on **${flipResult === 'heads' ? '🔵 Heads' : '🔴 Tails'}**!\n` +
+                    `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**`
+                )
+                .addFields(
+                    { name: won ? '💰 Winnings' : '💸 Lost', value: `${bet} 🪙 tokens`, inline: true },
+                    { name: '🏦 Balance', value: `${newTokens} 🪙`, inline: true },
+                    { name: '🍀 Luck Points', value: `${newLuck}`, inline: true }
+                )
+                .setFooter({ text: luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Pray for luck to boost your odds!' })
+                .setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // /transfer — send tokens to another player
+        if (commandName === 'transfer') {
+            const userId = interaction.user.id;
+            const targetUser = interaction.options.getUser('user');
+            const amount = interaction.options.getInteger('amount');
+
+            if (targetUser.id === userId)
+                return interaction.editReply('❌ You cannot transfer tokens to yourself!');
+            if (targetUser.bot)
+                return interaction.editReply('❌ You cannot transfer tokens to a bot!');
+
+            const sender = await getPlayer(userId, interaction.user.username);
+            if (!sender) return interaction.editReply('❌ Could not load your profile!');
+
+            if (sender.tokens < amount)
+                return interaction.editReply(`❌ Not enough tokens! You only have **${sender.tokens} 🪙**.`);
+
+            const receiver = await getPlayer(targetUser.id, targetUser.username);
+            if (!receiver) return interaction.editReply('❌ Could not load target profile!');
+
+            await updatePlayer(userId, { tokens: sender.tokens - amount });
+            await updatePlayer(targetUser.id, { tokens: receiver.tokens + amount, username: targetUser.username });
+
+            const embed = new EmbedBuilder()
+                .setTitle('💸 Token Transfer Complete!')
+                .setColor(0x3498DB)
+                .addFields(
+                    { name: '📤 Sent By', value: `${interaction.user}`, inline: true },
+                    { name: '📥 Received By', value: `${targetUser}`, inline: true },
+                    { name: '🪙 Amount', value: `${amount} tokens`, inline: true },
+                    { name: '💰 Your New Balance', value: `${sender.tokens - amount} tokens`, inline: true }
+                )
+                .setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // /pray — gain luck points every 4 hours
+        if (commandName === 'pray') {
+            const userId = interaction.user.id;
+            const player = await getPlayer(userId, interaction.user.username);
+            if (!player) return interaction.editReply('❌ Could not load your profile!');
+
+            const now = new Date();
+            const cooldown = (Math.random() < 0.5 ? 1 : 2) * 60 * 60 * 1000; // Random 1 or 2 hours
+
+            if (player.last_pray && (now - new Date(player.last_pray)) < cooldown) {
+                const nextPray = Math.floor((new Date(player.last_pray).getTime() + cooldown) / 1000);
+                return interaction.editReply(`🙏 The gods need time to listen... Pray again <t:${nextPray}:R>.`);
+            }
+
+            // Random luck points 1–5
+            const luckGained = Math.floor(Math.random() * 10) + 1; // Random 1–10
+            const newLuck = player.luck_points + luckGained;
+
+            await updatePlayer(userId, { luck_points: newLuck, last_pray: now.toISOString() });
+
+            let feelMsg;
+            if (luckGained <= 2) feelMsg = 'You feel a little lucky...';
+            else if (luckGained <= 4) feelMsg = 'You feel slightly lucky.';
+            else if (luckGained <= 6) feelMsg = 'You feel lucky!';
+            else if (luckGained <= 8) feelMsg = 'You feel very lucky!';
+            else if (luckGained === 9) feelMsg = 'You feel extremely lucky!!';
+            else feelMsg = 'You feel INCREDIBLY lucky!!!';
+
+            const embed = new EmbedBuilder()
+                .setTitle('🙏 Prayer')
+                .setColor(0x9B59B6)
+                .setDescription(`${interaction.user} prays... ${feelMsg}\nYou have **${newLuck} luck point(s)**!`)
+                .setFooter({ text: 'Pray again in 1–2 hours!' })
+                .setFooter({ text: 'Pray again in 1–2 hours!' })
+                .setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // /leaderboard
+        if (commandName === 'leaderboard') {
+            const top = await getLeaderboard();
+            if (top.length === 0) return interaction.editReply('📭 No players found yet!');
+
+            const medals = ['🥇', '🥈', '🥉'];
+            const desc = top.map((p, i) => {
+                const medal = medals[i] || `**#${i + 1}**`;
+                return `${medal} **${p.username}** — ${p.tokens} 🪙 tokens | 🍀 ${p.luck_points} luck`;
+            }).join('\n');
+
+            const embed = new EmbedBuilder()
+                .setTitle('🏆 Token Leaderboard')
+                .setColor(0xF1C40F)
+                .setDescription(desc)
+                .setFooter({ text: 'Use /daily, /coinflip, and /pray to earn more!' })
+                .setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
     } catch (err) {
         console.error(`❌ Error in ${commandName}:`, err.message);
         try { await interaction.editReply('❌ An error occurred. Make sure the bot has proper permissions!'); } catch {}
@@ -573,7 +857,6 @@ async function runSchedulePoller() {
                 const channel = guild.channels.cache.get(s.channel_id);
                 if (!channel) { await deleteSchedule(s.id); continue; }
 
-                // Build ping string
                 let pingText = '';
                 if (s.ping_str) {
                     const pingParts = s.ping_str.split(',').map(r => r.trim());
@@ -587,7 +870,6 @@ async function runSchedulePoller() {
                     }
                 }
 
-                // Send message like the screenshot
                 const embed = new EmbedBuilder()
                     .setColor(0x2C2F33)
                     .setDescription(
@@ -610,12 +892,11 @@ async function runSchedulePoller() {
 // BOT READY
 // =============================================
 client.once('ready', async () => {
-    console.log(`✅ Admin Bot logged in as ${client.user.tag}`);
+    console.log(`✅ Yagami-Bot logged in as ${client.user.tag}`);
     console.log(`✅ Serving ${client.guilds.cache.size} servers`);
     await registerCommands();
-    client.user.setActivity('Protecting servers 🛡️', { type: 3 });
+    client.user.setActivity('🪙 Coin Flip | /help', { type: 3 });
 
-    // Start schedule poller
     setInterval(runSchedulePoller, 30000);
     console.log('✅ Schedule poller started!');
 });
@@ -625,7 +906,7 @@ client.login(BOT_TOKEN);
 // Keep-alive
 const http = require('http');
 const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => { res.writeHead(200); res.end('Admin Bot running ✅'); })
+http.createServer((req, res) => { res.writeHead(200); res.end('Yagami-Bot running ✅'); })
     .listen(PORT, () => console.log(`✅ Keep-alive on port ${PORT}`));
 
 process.on('unhandledRejection', err => console.error('Unhandled rejection:', err.message));
