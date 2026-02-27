@@ -1338,15 +1338,16 @@ http.createServer((req, res) => {
 }).listen(PORT, () => console.log(`✅ Keep-alive on port ${PORT}`));
 
 // Self-ping
+// Self-ping
 if (SERVICE_URL) {
-    const { default: axios } = await import('axios').catch(() => ({ default: null }));
-    if (axios) {
-        setInterval(() => {
-            axios.get(SERVICE_URL)
-                .then(() => console.log(`🏓 Self-ping OK at ${new Date().toISOString()}`))
-                .catch(err => console.error('❌ Self-ping failed:', err.message));
-        }, 4 * 60 * 1000);
-    }
+    const https = require('https');
+    setInterval(() => {
+        https.get(SERVICE_URL, (res) => {
+            console.log(`🏓 Self-ping OK at ${new Date().toISOString()} (${res.statusCode})`);
+        }).on('error', (err) => {
+            console.error('❌ Self-ping failed:', err.message);
+        });
+    }, 4 * 60 * 1000);
 } else {
     console.warn('⚠️ SERVICE_URL not set — self-ping disabled.');
 }
