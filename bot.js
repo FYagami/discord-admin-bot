@@ -1,5 +1,6 @@
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder, PermissionFlagsBits, Collection } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
+const http = require('http');
 
 const client = new Client({
     intents: [
@@ -14,6 +15,23 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const PORT = process.env.PORT || 3000;
+const SERVICE_URL = process.env.SERVICE_URL || null;
+
+// =============================================
+// VALIDATE ENV VARS ON STARTUP
+// =============================================
+console.log('🔍 Checking environment variables...');
+console.log('BOT_TOKEN:', BOT_TOKEN ? `✅ Set (${BOT_TOKEN.length} chars)` : '❌ MISSING');
+console.log('CLIENT_ID:', CLIENT_ID ? '✅ Set' : '❌ MISSING');
+console.log('SUPABASE_URL:', SUPABASE_URL ? '✅ Set' : '❌ MISSING');
+console.log('SUPABASE_KEY:', SUPABASE_KEY ? '✅ Set' : '❌ MISSING');
+console.log('SERVICE_URL:', SERVICE_URL ? `✅ ${SERVICE_URL}` : '⚠️ Not set (self-ping disabled)');
+
+if (!BOT_TOKEN || !CLIENT_ID || !SUPABASE_URL || !SUPABASE_KEY) {
+    console.error('❌ FATAL: Missing required environment variables!');
+    process.exit(1);
+}
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -71,12 +89,9 @@ async function getAllSchedules() {
 // =============================================
 // SUPABASE HELPERS — GAME (tokens, luck)
 // =============================================
-
-// Get or create player profile
 async function getPlayer(userId, username) {
     const { data, error } = await supabase.from('players').select('*').eq('user_id', userId).single();
     if (error && error.code === 'PGRST116') {
-        // Not found, create new
         const newPlayer = {
             user_id: userId,
             username: username,
@@ -179,9 +194,10 @@ async function getAnnouncementChannel(guildId) {
     return data;
 }
 
-
+// =============================================
+// COMMANDS
+// =============================================
 const commands = [
-    // ROLE
     new SlashCommandBuilder()
         .setName('giverole').setDescription('Give a role to a member')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -194,7 +210,6 @@ const commands = [
         .addUserOption(opt => opt.setName('user').setDescription('The member').setRequired(true))
         .addRoleOption(opt => opt.setName('role').setDescription('Role to remove').setRequired(true)),
 
-    // WELCOME
     new SlashCommandBuilder()
         .setName('setwelcome').setDescription('Set the welcome channel and message')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -205,9 +220,6 @@ const commands = [
         .setName('removewelcome').setDescription('Remove the welcome message setup')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
-
-
-    // LOCKDOWN
     new SlashCommandBuilder()
         .setName('lockdown').setDescription('Lock all TEXT channels only (voice stays open)')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -217,7 +229,6 @@ const commands = [
         .setName('unlock').setDescription('Unlock all text channels')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
-    // VOICE LOCK
     new SlashCommandBuilder()
         .setName('lockvc').setDescription('Lock a specific voice channel for specific roles')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -240,14 +251,12 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addStringOption(opt => opt.setName('roles').setDescription('Role names separated by commas').setRequired(true)),
 
-    // ANTI-SPAM
     new SlashCommandBuilder()
         .setName('antispam').setDescription('Enable or disable anti-spam')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addStringOption(opt => opt.setName('status').setDescription('Enable or disable').setRequired(true)
             .addChoices({ name: 'Enable', value: 'enable' }, { name: 'Disable', value: 'disable' })),
 
-    // SCHEDULE
     new SlashCommandBuilder()
         .setName('schedule_msg').setDescription('Schedule a message to be sent at a specific time')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -270,7 +279,6 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addStringOption(opt => opt.setName('id').setDescription('Schedule ID to cancel').setRequired(true)),
 
-    // STICKY MESSAGES
     new SlashCommandBuilder()
         .setName('setsticky').setDescription('Set a sticky message in a channel')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -282,7 +290,6 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addChannelOption(opt => opt.setName('channel').setDescription('Channel to remove sticky from').setRequired(true)),
 
-    // ANNOUNCEMENTS
     new SlashCommandBuilder()
         .setName('setannouncechannel').setDescription('Set the announcement channel for this server')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -295,12 +302,10 @@ const commands = [
         .addStringOption(opt => opt.setName('ping').setDescription('Who to ping e.g. everyone, here, Member').setRequired(false))
         .addStringOption(opt => opt.setName('title').setDescription('Announcement title').setRequired(false)),
 
-    // MOD LOGS
     new SlashCommandBuilder()
         .setName('modlogs').setDescription('View moderation logs')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addUserOption(opt => opt.setName('user').setDescription('Filter logs by user').setRequired(false)),
-
 
     new SlashCommandBuilder()
         .setName('ban').setDescription('Ban a member from the server')
@@ -337,7 +342,6 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
         .addUserOption(opt => opt.setName('user').setDescription('The member to untimeout').setRequired(true)),
 
-
     new SlashCommandBuilder()
         .setName('serverinfo').setDescription('Show server information')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -347,41 +351,30 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addUserOption(opt => opt.setName('user').setDescription('The user').setRequired(false)),
 
-    // ==================
-    // GAME COMMANDS
-    // ==================
-
-    // Daily reward
     new SlashCommandBuilder()
-        .setName('daily').setDescription('Claim your daily 100 tokens reward 🎁'),
+        .setName('daily').setDescription('Claim your daily tokens reward 🎁'),
 
-    // Wallet / profile
     new SlashCommandBuilder()
         .setName('wallet').setDescription('Check your tokens and luck points 👛')
         .addUserOption(opt => opt.setName('user').setDescription('Check another player').setRequired(false)),
 
-    // Coin flip
     new SlashCommandBuilder()
         .setName('coinflip').setDescription('Flip a coin and bet your tokens! 🪙')
         .addStringOption(opt => opt.setName('side').setDescription('Heads or Tails?').setRequired(true)
             .addChoices({ name: '🔵 Heads', value: 'heads' }, { name: '🔴 Tails', value: 'tails' }))
         .addIntegerOption(opt => opt.setName('bet').setDescription('How many tokens to bet').setRequired(true).setMinValue(1)),
 
-    // Transfer tokens
     new SlashCommandBuilder()
         .setName('transfer').setDescription('Send tokens to another player 💸')
         .addUserOption(opt => opt.setName('user').setDescription('Player to send tokens to').setRequired(true))
         .addIntegerOption(opt => opt.setName('amount').setDescription('How many tokens to send').setRequired(true).setMinValue(1)),
 
-    // Pray for luck
     new SlashCommandBuilder()
-        .setName('pray').setDescription('Pray to the gods for luck points 🙏 (once every 4 hours)'),
+        .setName('pray').setDescription('Pray to the gods for luck points 🙏 (once every 1-2 hours)'),
 
-    // Leaderboard
     new SlashCommandBuilder()
         .setName('leaderboard').setDescription('Top 10 richest players 🏆'),
 
-    // HELP
     new SlashCommandBuilder()
         .setName('help').setDescription('Show all available commands'),
 ];
@@ -397,7 +390,7 @@ async function registerCommands() {
 }
 
 // =============================================
-// ANTI-SPAM + PREFIX COMMANDS
+// MESSAGE HANDLER (anti-spam + prefix + sticky)
 // =============================================
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
@@ -429,14 +422,13 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
-
+    // yaga cf shortcut
     if (message.content.toLowerCase().startsWith('yaga cf')) {
         const userId = message.author.id;
         const args = message.content.split(' ');
-        // args[0] = yaga, args[1] = cf, args[2] = bet/all, args[3] = optional side
         const betArg = args[2];
         const sideArg = (args[3] || '').toLowerCase();
-        const side = (sideArg === 'tails' || sideArg === 't') ? 'tails' : 'heads'; // h or heads or default = heads
+        const side = (sideArg === 'tails' || sideArg === 't') ? 'tails' : 'heads';
 
         if (!betArg) return message.reply('❌ Usage: `yaga cf <amount or all>` e.g. `yaga cf 500` or `yaga cf all`');
 
@@ -450,7 +442,7 @@ client.on('messageCreate', async (message) => {
 
         const luckBonus = Math.min(player.luck_points * 0.5, 10);
         const roll = Math.random() * 100;
-        const flipResult = roll < 50 ? 'heads' : 'tails';
+        const flipResult = roll < (50 + luckBonus) ? 'heads' : 'tails';
         const won = flipResult === side;
 
         const newTokens = won ? player.tokens + bet : player.tokens - bet;
@@ -482,7 +474,7 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
-
+    // !lockdown prefix
     if (message.content.toLowerCase() === '!lockdown') {
         if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
             return message.reply('❌ You need Administrator permission!');
@@ -498,6 +490,7 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
+    // !unlock prefix
     if (message.content.toLowerCase() === '!unlock') {
         if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
             return message.reply('❌ You need Administrator permission!');
@@ -529,9 +522,10 @@ client.on('messageCreate', async (message) => {
         } catch (err) { console.error('Sticky error:', err.message); }
     }
 
-
+    // Anti-spam
     const userId = message.author.id;
     const now = Date.now();
+    if (!antispamEnabled.get(guildId)) return;
     if (!spamTracker.has(userId)) { spamTracker.set(userId, { count: 1, firstMessage: now }); return; }
     const data = spamTracker.get(userId);
     if (now - data.firstMessage > SPAM_WINDOW) { spamTracker.set(userId, { count: 1, firstMessage: now }); return; }
@@ -569,7 +563,11 @@ client.on('guildMemberAdd', async (member) => {
 // =============================================
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
+
+    console.log(`📥 /${interaction.commandName} received from ${interaction.user.tag}`);
+
     try { await interaction.deferReply(); } catch { return; }
+
     const { commandName, guild } = interaction;
 
     try {
@@ -581,16 +579,14 @@ client.on('interactionCreate', async interaction => {
                 .setColor(0x3498DB)
                 .addFields(
                     { name: '👥 Role Management', value: '`/giverole` — Give a role\n`/removerole` — Remove a role' },
-                    { name: '👋 Welcome', value: '`/setwelcome` — Set welcome\n`/welcometest` — Test welcome' },
+                    { name: '👋 Welcome', value: '`/setwelcome` — Set welcome\n`/removewelcome` — Remove welcome' },
                     { name: '🔒 Text Lockdown', value: '`/lockdown` or `!lockdown` — Lock text channels\n`/unlock` or `!unlock` — Unlock text channels' },
                     { name: '🔊 Voice Lock', value: '`/lockvc` — Lock specific VC\n`/unlockvc` — Unlock specific VC\n`/lockallvc` — Lock all VCs\n`/unlockallvc` — Unlock all VCs' },
                     { name: '🔨 Moderation', value: '`/ban` — Ban a member\n`/kick` — Kick a member\n`/mute` — Mute a member\n`/unmute` — Unmute a member\n`/timeout` — Timeout a member\n`/untimeout` — Remove timeout' },
-
                     { name: '📅 Scheduled Messages', value: '`/schedule_msg` — Schedule a message\n`/list_schedules` — List this server schedules\n`/list_all_schedules` — List all schedules\n`/cancel_schedule` — Cancel a schedule' },
                     { name: '📌 Sticky & Announcements', value: '`/setsticky` — Set sticky message\n`/removesticky` — Remove sticky\n`/setannouncechannel` — Set announce channel\n`/announce` — Send announcement' },
                     { name: '📋 Mod Logs', value: '`/modlogs` — View moderation logs' },
-
-                    { name: '🎮 Games & Economy', value: '`/daily` — Claim 100 tokens daily\n`/wallet` — Check tokens & luck\n`/coinflip` — Bet tokens on a coin flip\n`/transfer` — Send tokens to a player\n`/pray` — Pray for luck points (every 4h)\n`/leaderboard` — Top 10 richest players' }
+                    { name: '🎮 Games & Economy', value: '`/daily` — Claim tokens daily\n`/wallet` — Check tokens & luck\n`/coinflip` — Bet tokens on a coin flip\n`/transfer` — Send tokens to a player\n`/pray` — Pray for luck points (every 1-2h)\n`/leaderboard` — Top 10 richest players' }
                 )
                 .setFooter({ text: 'Admin commands require Administrator permission' })
                 .setTimestamp();
@@ -629,20 +625,6 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /welcometest
-        if (commandName === 'welcometest') {
-            const config = welcomeConfig.get(guild.id);
-            if (!config) return interaction.editReply('❌ Welcome not set up! Use `/setwelcome` first.');
-            const channel = guild.channels.cache.get(config.channelId);
-            if (!channel) return interaction.editReply('❌ Welcome channel not found!');
-            const embed = new EmbedBuilder().setTitle('👋 Welcome!').setColor(0x2ECC71)
-                .setDescription(config.message.replace('{user}', interaction.user.toString()))
-                .setThumbnail(interaction.user.displayAvatarURL())
-                .setFooter({ text: `Member #${guild.memberCount}` }).setTimestamp();
-            channel.send({ embeds: [embed] });
-            return interaction.editReply('✅ Test welcome message sent!');
-        }
-
         // /removewelcome
         if (commandName === 'removewelcome') {
             if (!welcomeConfig.has(guild.id))
@@ -651,7 +633,7 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply('✅ Welcome message has been removed!');
         }
 
-
+        // /lockdown
         if (commandName === 'lockdown') {
             const reason = interaction.options.getString('reason') || 'No reason provided';
             lockdownState.set(guild.id, true);
@@ -766,7 +748,7 @@ client.on('interactionCreate', async interaction => {
                 .setTitle(status === 'enable' ? '✅ Anti-Spam Enabled' : '❌ Anti-Spam Disabled')
                 .setColor(status === 'enable' ? 0x2ECC71 : 0xFF0000)
                 .setDescription(status === 'enable'
-                    ? `Members sending more than **${SPAM_LIMIT} messages** in **${SPAM_WINDOW/1000}s** will be timed out for **${MUTE_DURATION}s**.`
+                    ? `Members sending more than **${SPAM_LIMIT} messages** in **${SPAM_WINDOW / 1000}s** will be timed out for **${MUTE_DURATION}s**.`
                     : 'Anti-spam is now disabled.')
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
@@ -780,7 +762,6 @@ client.on('interactionCreate', async interaction => {
             const theme = interaction.options.getString('theme') || null;
             const pingStr = interaction.options.getString('ping') || null;
 
-            // PHT = UTC+8
             const scheduledTime = new Date(dateStr + '+08:00');
             if (isNaN(scheduledTime.getTime()))
                 return interaction.editReply('❌ Invalid date! Use format: `YYYY-MM-DD HH:MM` e.g. `2026-02-28 20:30`');
@@ -791,7 +772,6 @@ client.on('interactionCreate', async interaction => {
             const id = `SCH-${scheduleCounter++}`;
 
             const schedule = { id, channelId: channel.id, guildId: guild.id, guildName: guild.name, title, theme, pingStr, time: scheduledTime, unixTimestamp, createdBy: interaction.user.tag };
-
             await saveSchedule(schedule);
 
             const embed = new EmbedBuilder()
@@ -850,8 +830,7 @@ client.on('interactionCreate', async interaction => {
             if (!member.bannable) return interaction.editReply('❌ I cannot ban this member! They may have a higher role than me.');
             await member.ban({ reason });
             await logModAction({ guildId: guild.id, guildName: guild.name, action: 'BAN', moderator: interaction.user, target: user, reason });
-            const embed = new EmbedBuilder().setTitle('🔨 Member Banned')
-.setColor(0xFF0000)
+            const embed = new EmbedBuilder().setTitle('🔨 Member Banned').setColor(0xFF0000)
                 .setThumbnail(user.displayAvatarURL())
                 .addFields(
                     { name: '👤 User', value: `${user} (${user.tag})`, inline: true },
@@ -870,8 +849,7 @@ client.on('interactionCreate', async interaction => {
             if (!member.kickable) return interaction.editReply('❌ I cannot kick this member! They may have a higher role than me.');
             await member.kick(reason);
             await logModAction({ guildId: guild.id, guildName: guild.name, action: 'KICK', moderator: interaction.user, target: user, reason });
-            const embed = new EmbedBuilder().setTitle('👢 Member Kicked')
-.setColor(0xFF8C00)
+            const embed = new EmbedBuilder().setTitle('👢 Member Kicked').setColor(0xFF8C00)
                 .setThumbnail(user.displayAvatarURL())
                 .addFields(
                     { name: '👤 User', value: `${user} (${user.tag})`, inline: true },
@@ -887,24 +865,18 @@ client.on('interactionCreate', async interaction => {
             const reason = interaction.options.getString('reason') || 'No reason provided';
             const member = await guild.members.fetch(user.id).catch(() => null);
             if (!member) return interaction.editReply('❌ Member not found!');
-
-            // Find or create Muted role
             let mutedRole = guild.roles.cache.find(r => r.name === 'Muted');
             if (!mutedRole) {
                 mutedRole = await guild.roles.create({ name: 'Muted', color: 0x808080, reason: 'Mute system role' });
-                // Apply to all channels
                 for (const [, channel] of guild.channels.cache) {
                     try { await channel.permissionOverwrites.edit(mutedRole, { SendMessages: false, Speak: false, AddReactions: false }); } catch {}
                 }
             }
-
             if (member.roles.cache.has(mutedRole.id))
                 return interaction.editReply(`❌ ${user} is already muted!`);
-
             await member.roles.add(mutedRole, reason);
             await logModAction({ guildId: guild.id, guildName: guild.name, action: 'MUTE', moderator: interaction.user, target: user, reason });
-            const embed = new EmbedBuilder().setTitle('🔇 Member Muted')
-.setColor(0x808080)
+            const embed = new EmbedBuilder().setTitle('🔇 Member Muted').setColor(0x808080)
                 .setThumbnail(user.displayAvatarURL())
                 .addFields(
                     { name: '👤 User', value: `${user} (${user.tag})`, inline: true },
@@ -931,7 +903,7 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /timeout
+        // /timeout — FIXED: added missing `until` variable
         if (commandName === 'timeout') {
             const user = interaction.options.getUser('user');
             const duration = interaction.options.getInteger('duration');
@@ -941,7 +913,7 @@ client.on('interactionCreate', async interaction => {
             if (!member.moderatable) return interaction.editReply('❌ I cannot timeout this member!');
             await member.timeout(duration * 60 * 1000, reason);
             await logModAction({ guildId: guild.id, guildName: guild.name, action: 'TIMEOUT', moderator: interaction.user, target: user, reason, duration: `${duration} minutes` });
-
+            const until = Math.floor((Date.now() + duration * 60 * 1000) / 1000); // FIXED: was missing
             const embed = new EmbedBuilder().setTitle('⏱️ Member Timed Out').setColor(0xF39C12)
                 .setThumbnail(user.displayAvatarURL())
                 .addFields(
@@ -969,7 +941,7 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-
+        // /serverinfo
         if (commandName === 'serverinfo') {
             const embed = new EmbedBuilder().setTitle(`📊 ${guild.name}`).setColor(0x3498DB).setThumbnail(guild.iconURL())
                 .addFields(
@@ -997,30 +969,24 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // ==========================================
-        // GAME COMMANDS
-        // ==========================================
-
-        // /daily — claim 100 tokens once per day (resets midnight PHT)
+        // /daily
         if (commandName === 'daily') {
             const userId = interaction.user.id;
             const player = await getPlayer(userId, interaction.user.username);
             if (!player) return interaction.editReply('❌ Could not load your profile!');
 
             const now = new Date();
-            // Midnight PHT = UTC+8
             const phtOffset = 8 * 60 * 60 * 1000;
             const phtNow = new Date(now.getTime() + phtOffset);
             const phtMidnight = new Date(Date.UTC(phtNow.getUTCFullYear(), phtNow.getUTCMonth(), phtNow.getUTCDate()) - phtOffset);
 
             if (player.last_daily && new Date(player.last_daily) >= phtMidnight) {
-                // Calculate next midnight PHT
                 const nextMidnight = new Date(phtMidnight.getTime() + 24 * 60 * 60 * 1000);
                 const unixNext = Math.floor(nextMidnight.getTime() / 1000);
                 return interaction.editReply(`⏳ You already claimed your daily reward! Come back <t:${unixNext}:R>.`);
             }
 
-            const reward = Math.floor(Math.random() * 4001) + 1000; // Random 1000–5000
+            const reward = Math.floor(Math.random() * 4001) + 1000;
             await updatePlayer(userId, {
                 tokens: player.tokens + reward,
                 last_daily: now.toISOString(),
@@ -1040,7 +1006,7 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /wallet — check tokens and stats
+        // /wallet
         if (commandName === 'wallet') {
             const targetUser = interaction.options.getUser('user') || interaction.user;
             const player = await getPlayer(targetUser.id, targetUser.username);
@@ -1065,7 +1031,7 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /coinflip — bet tokens on heads or tails
+        // /coinflip
         if (commandName === 'coinflip') {
             const userId = interaction.user.id;
             const side = interaction.options.getString('side');
@@ -1073,20 +1039,15 @@ client.on('interactionCreate', async interaction => {
 
             const player = await getPlayer(userId, interaction.user.username);
             if (!player) return interaction.editReply('❌ Could not load your profile!');
-
             if (player.tokens < bet)
                 return interaction.editReply(`❌ You don't have enough tokens! You only have **${player.tokens} 🪙**.`);
 
-            // Luck points give a small boost to win chance (max +10%)
-            const luckBonus = Math.min(player.luck_points * 0.5, 10); // each luck point = +0.5%, max 10%
-            const winChance = 50 + luckBonus;
+            const luckBonus = Math.min(player.luck_points * 0.5, 10);
             const roll = Math.random() * 100;
-            const flipResult = roll < 50 ? 'heads' : 'tails';
+            const flipResult = roll < (50 + luckBonus) ? 'heads' : 'tails';
             const won = flipResult === side;
-
-            let newTokens = won ? player.tokens + bet : player.tokens - bet;
-            // Consume 1 luck point per flip if they have any
-            let newLuck = Math.max(0, player.luck_points - 1);
+            const newTokens = won ? player.tokens + bet : player.tokens - bet;
+            const newLuck = Math.max(0, player.luck_points - 1);
 
             await updatePlayer(userId, {
                 tokens: newTokens,
@@ -1113,20 +1074,17 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /transfer — send tokens to another player
+        // /transfer
         if (commandName === 'transfer') {
             const userId = interaction.user.id;
             const targetUser = interaction.options.getUser('user');
             const amount = interaction.options.getInteger('amount');
 
-            if (targetUser.id === userId)
-                return interaction.editReply('❌ You cannot transfer tokens to yourself!');
-            if (targetUser.bot)
-                return interaction.editReply('❌ You cannot transfer tokens to a bot!');
+            if (targetUser.id === userId) return interaction.editReply('❌ You cannot transfer tokens to yourself!');
+            if (targetUser.bot) return interaction.editReply('❌ You cannot transfer tokens to a bot!');
 
             const sender = await getPlayer(userId, interaction.user.username);
             if (!sender) return interaction.editReply('❌ Could not load your profile!');
-
             if (sender.tokens < amount)
                 return interaction.editReply(`❌ Not enough tokens! You only have **${sender.tokens} 🪙**.`);
 
@@ -1149,24 +1107,22 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /pray — gain luck points every 4 hours
+        // /pray — FIXED: removed duplicate setFooter
         if (commandName === 'pray') {
             const userId = interaction.user.id;
             const player = await getPlayer(userId, interaction.user.username);
             if (!player) return interaction.editReply('❌ Could not load your profile!');
 
             const now = new Date();
-            const cooldown = (Math.random() < 0.5 ? 1 : 2) * 60 * 60 * 1000; // Random 1 or 2 hours
+            const cooldownMs = (Math.random() < 0.5 ? 1 : 2) * 60 * 60 * 1000;
 
-            if (player.last_pray && (now - new Date(player.last_pray)) < cooldown) {
-                const nextPray = Math.floor((new Date(player.last_pray).getTime() + cooldown) / 1000);
+            if (player.last_pray && (now - new Date(player.last_pray)) < cooldownMs) {
+                const nextPray = Math.floor((new Date(player.last_pray).getTime() + cooldownMs) / 1000);
                 return interaction.editReply(`🙏 The gods need time to listen... Pray again <t:${nextPray}:R>.`);
             }
 
-            // Random luck points 1–5
-            const luckGained = Math.floor(Math.random() * 10) + 1; // Random 1–10
+            const luckGained = Math.floor(Math.random() * 10) + 1;
             const newLuck = player.luck_points + luckGained;
-
             await updatePlayer(userId, { luck_points: newLuck, last_pray: now.toISOString() });
 
             let feelMsg;
@@ -1180,9 +1136,8 @@ client.on('interactionCreate', async interaction => {
             const embed = new EmbedBuilder()
                 .setTitle('🙏 Prayer')
                 .setColor(0x9B59B6)
-                .setDescription(`${interaction.user} prays... ${feelMsg}\nYou have **${newLuck} luck point(s)**!`)
-                .setFooter({ text: 'Pray again in 1–2 hours!' })
-                .setFooter({ text: 'Pray again in 1–2 hours!' })
+                .setDescription(`${interaction.user} prays... ${feelMsg}\nYou gained **+${luckGained} luck points**!\nYou now have **${newLuck} luck point(s)**!`)
+                .setFooter({ text: 'Pray again in 1–2 hours!' }) // FIXED: removed duplicate setFooter
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
         }
@@ -1273,7 +1228,7 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-
+        // /leaderboard
         if (commandName === 'leaderboard') {
             const top = await getLeaderboard();
             if (top.length === 0) return interaction.editReply('📭 No players found yet!');
@@ -1294,7 +1249,7 @@ client.on('interactionCreate', async interaction => {
         }
 
     } catch (err) {
-        console.error(`❌ Error in ${commandName}:`, err.message);
+        console.error(`❌ Error in /${commandName}:`, err.message);
         try { await interaction.editReply('❌ An error occurred. Make sure the bot has proper permissions!'); } catch {}
     }
 });
@@ -1349,24 +1304,56 @@ async function runSchedulePoller() {
 // =============================================
 // BOT READY
 // =============================================
+const loginTimeout = setTimeout(() => {
+    console.error('❌ FATAL: Login timed out after 30 seconds.');
+    process.exit(1);
+}, 30000);
+
 client.once('clientReady', async () => {
+    clearTimeout(loginTimeout);
     console.log(`✅ Yagami-Bot logged in as ${client.user.tag}`);
     console.log(`✅ Serving ${client.guilds.cache.size} servers`);
     await registerCommands();
     client.user.setActivity('🪙 Coin Flip | /help', { type: 3 });
-
     setInterval(runSchedulePoller, 30000);
     console.log('✅ Schedule poller started!');
 });
 
-client.login(BOT_TOKEN);
+// =============================================
+// LOGIN
+// =============================================
+console.log('🔑 Attempting to login to Discord...');
+client.login(BOT_TOKEN).catch(err => {
+    clearTimeout(loginTimeout);
+    console.error('❌ FATAL: Discord login failed:', err.message);
+    process.exit(1);
+});
 
-// Keep-alive
-const http = require('http');
-const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => { res.writeHead(200); res.end('Yagami-Bot running ✅'); })
-    .listen(PORT, () => console.log(`✅ Keep-alive on port ${PORT}`));
+// =============================================
+// KEEP-ALIVE HTTP SERVER
+// =============================================
+http.createServer((req, res) => {
+    res.writeHead(200);
+    res.end('Yagami-Bot running ✅');
+}).listen(PORT, () => console.log(`✅ Keep-alive on port ${PORT}`));
 
+// Self-ping
+if (SERVICE_URL) {
+    const { default: axios } = await import('axios').catch(() => ({ default: null }));
+    if (axios) {
+        setInterval(() => {
+            axios.get(SERVICE_URL)
+                .then(() => console.log(`🏓 Self-ping OK at ${new Date().toISOString()}`))
+                .catch(err => console.error('❌ Self-ping failed:', err.message));
+        }, 4 * 60 * 1000);
+    }
+} else {
+    console.warn('⚠️ SERVICE_URL not set — self-ping disabled.');
+}
+
+// =============================================
+// CRASH PREVENTION
+// =============================================
 process.on('unhandledRejection', err => console.error('Unhandled rejection:', err.message));
 process.on('uncaughtException', err => console.error('Uncaught exception:', err.message));
 client.on('error', err => console.error('Client error:', err.message));
