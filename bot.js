@@ -397,9 +397,12 @@ client.on('messageCreate', async (message) => {
     if (!message.guild) return;
 
     const guildId = message.guild.id;
+    const content = message.content.toLowerCase().trim();
 
-    // yaga cash shortcut
-    if (message.content.toLowerCase() === 'yaga cash') {
+    // -----------------------------------------------
+    // yaga cash shortcut (alias for yaga wallet self)
+    // -----------------------------------------------
+    if (content === 'yaga cash') {
         const player = await getPlayer(message.author.id, message.author.username);
         if (!player) return message.reply('❌ Could not load your profile!');
 
@@ -422,8 +425,161 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
+    // -----------------------------------------------
+    // yaga wallet — check your own or another user's wallet
+    // Usage: yaga wallet | yaga wallet @user
+    // -----------------------------------------------
+    if (content === 'yaga wallet' || content.startsWith('yaga wallet ')) {
+        const mention = message.mentions.users.first();
+        const targetUser = mention || message.author;
+        const player = await getPlayer(targetUser.id, targetUser.username);
+        if (!player) return message.reply('❌ Could not load profile!');
+
+        const winRate = (player.total_wins + player.total_losses) > 0
+            ? ((player.total_wins / (player.total_wins + player.total_losses)) * 100).toFixed(1)
+            : '0.0';
+
+        const embed = new EmbedBuilder()
+            .setTitle(`👛 ${targetUser.username}'s Wallet`)
+            .setColor(0xF1C40F)
+            .setThumbnail(targetUser.displayAvatarURL())
+            .addFields(
+                { name: '🪙 Tokens', value: `${player.tokens}`, inline: true },
+                { name: '🍀 Luck Points', value: `${player.luck_points}`, inline: true },
+                { name: '🏆 Wins', value: `${player.total_wins}`, inline: true },
+                { name: '💀 Losses', value: `${player.total_losses}`, inline: true },
+                { name: '📊 Win Rate', value: `${winRate}%`, inline: true }
+            )
+            .setTimestamp();
+        return message.channel.send({ embeds: [embed] });
+    }
+
+    // -----------------------------------------------
+    // yaga daily — claim daily tokens
+    // Usage: yaga daily
+    // -----------------------------------------------
+    if (content === 'yaga daily') {
+        const userId = message.author.id;
+        const player = await getPlayer(userId, message.author.username);
+        if (!player) return message.reply('❌ Could not load your profile!');
+
+        const now = new Date();
+        const phtOffset = 8 * 60 * 60 * 1000;
+        const phtNow = new Date(now.getTime() + phtOffset);
+        const phtMidnight = new Date(Date.UTC(phtNow.getUTCFullYear(), phtNow.getUTCMonth(), phtNow.getUTCDate()) - phtOffset);
+
+        if (player.last_daily && new Date(player.last_daily) >= phtMidnight) {
+            const nextMidnight = new Date(phtMidnight.getTime() + 24 * 60 * 60 * 1000);
+            const unixNext = Math.floor(nextMidnight.getTime() / 1000);
+            return message.reply(`⏳ You already claimed your daily reward! Come back <t:${unixNext}:R>.`);
+        }
+
+        const reward = Math.floor(Math.random() * 4001) + 1000;
+        await updatePlayer(userId, {
+            tokens: player.tokens + reward,
+            last_daily: now.toISOString(),
+            username: message.author.username
+        });
+
+        const embed = new EmbedBuilder()
+            .setTitle('🎁 Daily Reward Claimed!')
+            .setColor(0xF1C40F)
+            .setDescription(`You received **${reward} 🪙 tokens**!`)
+            .addFields(
+                { name: '💰 New Balance', value: `${player.tokens + reward} tokens`, inline: true },
+                { name: '🍀 Luck Points', value: `${player.luck_points}`, inline: true }
+            )
+            .setFooter({ text: 'Come back tomorrow for more!' })
+            .setTimestamp();
+        return message.channel.send({ embeds: [embed] });
+    }
+
+    // -----------------------------------------------
+    // yaga pray — pray for luck points
+    // Usage: yaga pray
+    // -----------------------------------------------
+    if (content === 'yaga pray') {
+        const userId = message.author.id;
+        const player = await getPlayer(userId, message.author.username);
+        if (!player) return message.reply('❌ Could not load your profile!');
+
+        const now = new Date();
+        const cooldownMs = (Math.random() < 0.5 ? 1 : 2) * 60 * 60 * 1000;
+
+        if (player.last_pray && (now - new Date(player.last_pray)) < cooldownMs) {
+            const nextPray = Math.floor((new Date(player.last_pray).getTime() + cooldownMs) / 1000);
+            return message.reply(`🙏 The gods need time to listen... Pray again <t:${nextPray}:R>.`);
+        }
+
+        const luckGained = Math.floor(Math.random() * 10) + 1;
+        const newLuck = player.luck_points + luckGained;
+        await updatePlayer(userId, { luck_points: newLuck, last_pray: now.toISOString() });
+
+        let feelMsg;
+        if (luckGained <= 2) feelMsg = 'You feel a little lucky...';
+        else if (luckGained <= 4) feelMsg = 'You feel slightly lucky.';
+        else if (luckGained <= 6) feelMsg = 'You feel lucky!';
+        else if (luckGained <= 8) feelMsg = 'You feel very lucky!';
+        else if (luckGained === 9) feelMsg = 'You feel extremely lucky!!';
+        else feelMsg = 'You feel INCREDIBLY lucky!!!';
+
+        const embed = new EmbedBuilder()
+            .setTitle('🙏 Prayer')
+            .setColor(0x9B59B6)
+            .setDescription(`${message.author} prays... ${feelMsg}\nYou gained **+${luckGained} luck points**!\nYou now have **${newLuck} luck point(s)**!`)
+            .setFooter({ text: 'Pray again in 1–2 hours!' })
+            .setTimestamp();
+        return message.channel.send({ embeds: [embed] });
+    }
+
+    // -----------------------------------------------
+    // yaga transfer — send tokens to another user
+    // Usage: yaga transfer <amount> @user
+    // -----------------------------------------------
+    if (content.startsWith('yaga transfer')) {
+        const args = message.content.trim().split(/\s+/);
+        // args: ['yaga', 'transfer', '<amount>', '@user']
+        const amountArg = args[2];
+        const targetUser = message.mentions.users.first();
+
+        if (!amountArg || !targetUser) {
+            return message.reply('❌ Usage: `yaga transfer <amount> @user` e.g. `yaga transfer 500 @John`');
+        }
+
+        const amount = parseInt(amountArg);
+        if (isNaN(amount) || amount < 1) return message.reply('❌ Invalid amount! Must be a positive number.');
+        if (targetUser.id === message.author.id) return message.reply('❌ You cannot transfer tokens to yourself!');
+        if (targetUser.bot) return message.reply('❌ You cannot transfer tokens to a bot!');
+
+        const sender = await getPlayer(message.author.id, message.author.username);
+        if (!sender) return message.reply('❌ Could not load your profile!');
+        if (sender.tokens < amount)
+            return message.reply(`❌ Not enough tokens! You only have **${sender.tokens} 🪙**.`);
+
+        const receiver = await getPlayer(targetUser.id, targetUser.username);
+        if (!receiver) return message.reply('❌ Could not load target profile!');
+
+        await updatePlayer(message.author.id, { tokens: sender.tokens - amount });
+        await updatePlayer(targetUser.id, { tokens: receiver.tokens + amount, username: targetUser.username });
+
+        const embed = new EmbedBuilder()
+            .setTitle('💸 Token Transfer Complete!')
+            .setColor(0x3498DB)
+            .addFields(
+                { name: '📤 Sent By', value: `${message.author}`, inline: true },
+                { name: '📥 Received By', value: `${targetUser}`, inline: true },
+                { name: '🪙 Amount', value: `${amount} tokens`, inline: true },
+                { name: '💰 Your New Balance', value: `${sender.tokens - amount} tokens`, inline: true }
+            )
+            .setTimestamp();
+        return message.channel.send({ embeds: [embed] });
+    }
+
+    // -----------------------------------------------
     // yaga cf shortcut
-    if (message.content.toLowerCase().startsWith('yaga cf')) {
+    // Usage: yaga cf <amount or all> [heads/tails/h/t]
+    // -----------------------------------------------
+    if (content.startsWith('yaga cf')) {
         const userId = message.author.id;
         const args = message.content.split(' ');
         const betArg = args[2];
@@ -434,7 +590,7 @@ client.on('messageCreate', async (message) => {
 
         const player = await getPlayer(userId, message.author.username);
         if (!player) return message.reply('❌ Could not load your profile!');
-        if (player.tokens <= 0) return message.reply('❌ You have no tokens! Use `/daily` to get some.');
+        if (player.tokens <= 0) return message.reply('❌ You have no tokens! Use `yaga daily` to get some.');
 
         const bet = betArg.toLowerCase() === 'all' ? player.tokens : parseInt(betArg);
         if (isNaN(bet) || bet < 1) return message.reply('❌ Invalid bet amount!');
@@ -469,7 +625,7 @@ client.on('messageCreate', async (message) => {
                 { name: '🏦 Balance', value: `${newTokens} 🪙`, inline: true },
                 { name: '🍀 Luck Points', value: `${newLuck}`, inline: true }
             )
-            .setFooter({ text: luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Use /pray for luck boost!' })
+            .setFooter({ text: luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Use yaga pray for luck boost!' })
             .setTimestamp();
         return message.channel.send({ embeds: [embed] });
     }
@@ -586,7 +742,7 @@ client.on('interactionCreate', async interaction => {
                     { name: '📅 Scheduled Messages', value: '`/schedule_msg` — Schedule a message\n`/list_schedules` — List this server schedules\n`/list_all_schedules` — List all schedules\n`/cancel_schedule` — Cancel a schedule' },
                     { name: '📌 Sticky & Announcements', value: '`/setsticky` — Set sticky message\n`/removesticky` — Remove sticky\n`/setannouncechannel` — Set announce channel\n`/announce` — Send announcement' },
                     { name: '📋 Mod Logs', value: '`/modlogs` — View moderation logs' },
-                    { name: '🎮 Games & Economy', value: '`/daily` — Claim tokens daily\n`/wallet` — Check tokens & luck\n`/coinflip` — Bet tokens on a coin flip\n`/transfer` — Send tokens to a player\n`/pray` — Pray for luck points (every 1-2h)\n`/leaderboard` — Top 10 richest players' }
+                    { name: '🎮 Games & Economy', value: '`/daily` or `yaga daily` — Claim tokens daily\n`/wallet` or `yaga wallet [@user]` — Check tokens & luck\n`/coinflip` or `yaga cf <amount> [h/t]` — Bet tokens on a coin flip\n`/transfer` or `yaga transfer <amount> @user` — Send tokens\n`/pray` or `yaga pray` — Pray for luck (every 1-2h)\n`/leaderboard` — Top 10 richest players' }
                 )
                 .setFooter({ text: 'Admin commands require Administrator permission' })
                 .setTimestamp();
@@ -903,7 +1059,7 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /timeout — FIXED: added missing `until` variable
+        // /timeout
         if (commandName === 'timeout') {
             const user = interaction.options.getUser('user');
             const duration = interaction.options.getInteger('duration');
@@ -913,7 +1069,7 @@ client.on('interactionCreate', async interaction => {
             if (!member.moderatable) return interaction.editReply('❌ I cannot timeout this member!');
             await member.timeout(duration * 60 * 1000, reason);
             await logModAction({ guildId: guild.id, guildName: guild.name, action: 'TIMEOUT', moderator: interaction.user, target: user, reason, duration: `${duration} minutes` });
-            const until = Math.floor((Date.now() + duration * 60 * 1000) / 1000); // FIXED: was missing
+            const until = Math.floor((Date.now() + duration * 60 * 1000) / 1000);
             const embed = new EmbedBuilder().setTitle('⏱️ Member Timed Out').setColor(0xF39C12)
                 .setThumbnail(user.displayAvatarURL())
                 .addFields(
@@ -1107,7 +1263,7 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /pray — FIXED: removed duplicate setFooter
+        // /pray
         if (commandName === 'pray') {
             const userId = interaction.user.id;
             const player = await getPlayer(userId, interaction.user.username);
@@ -1137,7 +1293,7 @@ client.on('interactionCreate', async interaction => {
                 .setTitle('🙏 Prayer')
                 .setColor(0x9B59B6)
                 .setDescription(`${interaction.user} prays... ${feelMsg}\nYou gained **+${luckGained} luck points**!\nYou now have **${newLuck} luck point(s)**!`)
-                .setFooter({ text: 'Pray again in 1–2 hours!' }) // FIXED: removed duplicate setFooter
+                .setFooter({ text: 'Pray again in 1–2 hours!' })
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
         }
@@ -1337,7 +1493,6 @@ http.createServer((req, res) => {
     res.end('Yagami-Bot running ✅');
 }).listen(PORT, () => console.log(`✅ Keep-alive on port ${PORT}`));
 
-// Self-ping
 // Self-ping
 if (SERVICE_URL) {
     const https = require('https');
