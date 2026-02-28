@@ -377,6 +377,12 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('help').setDescription('Show all available commands'),
+
+    new SlashCommandBuilder()
+        .setName('givetoken').setDescription('Give tokens to a player (Admin only) 💰')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addUserOption(opt => opt.setName('user').setDescription('Player to give tokens to').setRequired(true))
+        .addIntegerOption(opt => opt.setName('amount').setDescription('How many tokens to give').setRequired(true).setMinValue(1)),
 ];
 
 async function registerCommands() {
@@ -574,6 +580,45 @@ client.on('messageCreate', async (message) => {
                 { name: '📥 Received By', value: `${targetUser}`, inline: true },
                 { name: '🪙 Amount', value: `${amount} tokens`, inline: true },
                 { name: '💰 Your New Balance', value: `${sender.tokens - amount} tokens`, inline: true }
+            )
+            .setTimestamp();
+        return message.channel.send({ embeds: [embed] });
+    }
+
+    // -----------------------------------------------
+    // yaga give — admin gives tokens to a player
+    // Usage: yaga give @user <amount>
+    // -----------------------------------------------
+    if (content.startsWith('yaga give')) {
+        if (message.author.id !== '470424469446590474') {
+            return message.reply({ content: '❌ Only the bot owner can use this command!', ephemeral: true }).catch(() => {});
+        }
+
+        const args = message.content.trim().split(/\s+/);
+        const targetUser = message.mentions.users.first();
+        const amountArg = args[3];
+
+        if (!targetUser || !amountArg)
+            return message.reply('❌ Usage: `yaga give @user <amount>` e.g. `yaga give @John 1000000`');
+
+        const amount = amountArg.toLowerCase() === 'all' ? 1000000 : parseInt(amountArg);
+        if (isNaN(amount) || amount < 1) return message.reply('❌ Invalid amount!');
+
+        const receiver = await getPlayer(targetUser.id, targetUser.username);
+        if (!receiver) return message.reply('❌ Could not load target profile!');
+
+        const newBalance = receiver.tokens + amount;
+        await updatePlayer(targetUser.id, { tokens: newBalance, username: targetUser.username });
+
+        const embed = new EmbedBuilder()
+            .setTitle('💰 Tokens Given!')
+            .setColor(0xF1C40F)
+            .setThumbnail(targetUser.displayAvatarURL())
+            .addFields(
+                { name: '📥 Received By', value: `${targetUser}`, inline: true },
+                { name: '🪙 Amount Given', value: `${amount.toLocaleString()} tokens`, inline: true },
+                { name: '🏦 New Balance', value: `${newBalance.toLocaleString()} tokens`, inline: true },
+                { name: '👑 Given By', value: `${message.author}`, inline: true }
             )
             .setTimestamp();
         return message.channel.send({ embeds: [embed] });
@@ -825,7 +870,7 @@ client.on('interactionCreate', async interaction => {
                     { name: '📅 Scheduled Messages', value: '`/schedule_msg` — Schedule a message\n`/list_schedules` — List this server schedules\n`/list_all_schedules` — List all schedules\n`/cancel_schedule` — Cancel a schedule' },
                     { name: '📌 Sticky & Announcements', value: '`/setsticky` — Set sticky message\n`/removesticky` — Remove sticky\n`/setannouncechannel` — Set announce channel\n`/announce` — Send announcement' },
                     { name: '📋 Mod Logs', value: '`/modlogs` — View moderation logs' },
-                    { name: '🎮 Games & Economy', value: '`/daily` or `yaga daily` — Claim tokens daily\n`/wallet` or `yaga wallet [@user]` — Check tokens & luck\n`/coinflip` or `yaga cf <amount> [h/t]` — Bet tokens on a coin flip\n`yaga luck <luck> <bet> [h/t]` — Spend luck to boost a flip (each luck pt = +2% win chance)\n`/transfer` or `yaga transfer <amount> @user` — Send tokens\n`/pray` or `yaga pray` — Pray for luck (every 1-2h, requires ≥1 token)\n`/leaderboard` — Top 10 richest players' }
+                    { name: '🎮 Games & Economy', value: '`/daily` or `yaga daily` — Claim tokens daily\n`/wallet` or `yaga wallet [@user]` — Check tokens & luck\n`/coinflip` or `yaga cf <amount> [h/t]` — Bet tokens on a coin flip\n`yaga luck <luck> <bet> [h/t]` — Spend luck to boost a flip (each luck pt = +2% win chance)\n`/transfer` or `yaga transfer <amount> @user` — Send tokens\n`/pray` or `yaga pray` — Pray for luck (every 1-2h, requires ≥1 token)\n`/leaderboard` — Top 10 richest players\n`/givetoken` or `yaga give @user <amount>` — Give tokens (Admin only)' }
                 )
                 .setFooter({ text: 'Admin commands require Administrator permission' })
                 .setTimestamp();
@@ -1381,6 +1426,34 @@ client.on('interactionCreate', async interaction => {
                 .setColor(0x9B59B6)
                 .setDescription(`${interaction.user} prays... ${feelMsg}\nYou gained **+${luckGained} luck points**!\nYou now have **${newLuck} luck point(s)**!`)
                 .setFooter({ text: 'Pray again in 1–2 hours!' })
+                .setTimestamp();
+            return interaction.editReply({ embeds: [embed] });
+        }
+
+        // /givetoken
+        if (commandName === 'givetoken') {
+            if (interaction.user.id !== '470424469446590474')
+                return interaction.editReply({ content: '❌ Only the babaYAGA can use this command!', ephemeral: true });
+
+            const targetUser = interaction.options.getUser('user');
+            const amount = interaction.options.getInteger('amount');
+
+            const receiver = await getPlayer(targetUser.id, targetUser.username);
+            if (!receiver) return interaction.editReply('❌ Could not load target profile!');
+
+            const newBalance = receiver.tokens + amount;
+            await updatePlayer(targetUser.id, { tokens: newBalance, username: targetUser.username });
+
+            const embed = new EmbedBuilder()
+                .setTitle('💰 Tokens Given!')
+                .setColor(0xF1C40F)
+                .setThumbnail(targetUser.displayAvatarURL())
+                .addFields(
+                    { name: '📥 Received By', value: `${targetUser}`, inline: true },
+                    { name: '🪙 Amount Given', value: `${amount.toLocaleString()} tokens`, inline: true },
+                    { name: '🏦 New Balance', value: `${newBalance.toLocaleString()} tokens`, inline: true },
+                    { name: '👑 Given By', value: `${interaction.user}`, inline: true }
+                )
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
         }
