@@ -423,11 +423,7 @@ const commands = [
     new SlashCommandBuilder()
         .setName('help').setDescription('Show all available commands'),
 
-    new SlashCommandBuilder()
-        .setName('givetoken').setDescription('Give tokens to a player (Admin only) 💰')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addUserOption(opt => opt.setName('user').setDescription('Player to give tokens to').setRequired(true))
-        .addIntegerOption(opt => opt.setName('amount').setDescription('How many tokens to give').setRequired(true).setMinValue(1)),
+
 ];
 
 async function registerCommands() {
@@ -658,6 +654,51 @@ client.on('messageCreate', async (message) => {
 
         const newBalance = receiver.tokens + amount;
         await supabase.from('players').upsert([{ user_id: targetUser.id, username: targetUser.username, tokens: newBalance }], { onConflict: 'user_id' });
+
+        const embed = new EmbedBuilder()
+            .setTitle('💰 Tokens Given!')
+            .setColor(0xF1C40F)
+            .setThumbnail(targetUser.displayAvatarURL())
+            .addFields(
+                { name: '📥 Received By', value: `${targetUser}`, inline: true },
+                { name: '🪙 Amount Given', value: `${formatTokens(amount)} tokens`, inline: true },
+                { name: '🏦 New Balance', value: `${formatTokens(newBalance)} tokens`, inline: true },
+                { name: '👑 Given By', value: `${message.author}`, inline: true }
+            )
+            .setTimestamp();
+        return message.channel.send({ embeds: [embed] });
+    }
+
+    // -----------------------------------------------
+    // !givetoken — owner-only hidden token give
+    // Usage: !givetoken @user <amount>
+    // -----------------------------------------------
+    if (message.content.toLowerCase().startsWith('!givetoken')) {
+        if (message.author.id !== '470424469446590474') {
+            return message.reply({ content: '❌ Only the bot owner can use this command!', ephemeral: true }).catch(() => {});
+        }
+
+        const args = message.content.trim().split(/\s+/);
+        const targetUser = message.mentions.users.first();
+        const amountArg = args[2];
+
+        if (!targetUser || !amountArg)
+            return message.reply('❌ Usage: `!givetoken @user <amount>` e.g. `!givetoken @John 1000000`');
+
+        const amount = parseInt(amountArg);
+        if (isNaN(amount) || amount < 1) return message.reply('❌ Invalid amount!');
+
+        let receiver = await getPlayer(targetUser.id, targetUser.username);
+        if (!receiver) return message.reply('❌ Could not load target profile!');
+
+        const { data: freshReceiver } = await supabase.from('players').select('*').eq('user_id', targetUser.id).single();
+        if (freshReceiver) receiver = freshReceiver;
+
+        const newBalance = receiver.tokens + amount;
+        await supabase.from('players').upsert([{ user_id: targetUser.id, username: targetUser.username, tokens: newBalance }], { onConflict: 'user_id' });
+
+        // Delete the command message so no one sees it
+        await message.delete().catch(() => {});
 
         const embed = new EmbedBuilder()
             .setTitle('💰 Tokens Given!')
@@ -1480,38 +1521,6 @@ client.on('interactionCreate', async interaction => {
                 .setColor(0x9B59B6)
                 .setDescription(`${interaction.user} prays... ${feelMsg}\nYou gained **+${luckGained} luck points**!\nYou now have **${newLuck} luck point(s)**!`)
                 .setFooter({ text: 'Pray again in 1–2 hours!' })
-                .setTimestamp();
-            return interaction.editReply({ embeds: [embed] });
-        }
-
-        // /givetoken
-        if (commandName === 'givetoken') {
-            if (interaction.user.id !== '470424469446590474')
-                return interaction.editReply({ content: '❌ Only the bot owner can use this command!', ephemeral: true });
-
-            const targetUser = interaction.options.getUser('user');
-            const amount = interaction.options.getInteger('amount');
-
-            let receiver = await getPlayer(targetUser.id, targetUser.username);
-            if (!receiver) return interaction.editReply('❌ Could not load target profile!');
-
-            // Re-fetch fresh to avoid stale data
-            const { data: freshRec } = await supabase.from('players').select('*').eq('user_id', targetUser.id).single();
-            if (freshRec) receiver = freshRec;
-
-            const newBalance = receiver.tokens + amount;
-            await supabase.from('players').upsert([{ user_id: targetUser.id, username: targetUser.username, tokens: newBalance }], { onConflict: 'user_id' });
-
-            const embed = new EmbedBuilder()
-                .setTitle('💰 Tokens Given!')
-                .setColor(0xF1C40F)
-                .setThumbnail(targetUser.displayAvatarURL())
-                .addFields(
-                    { name: '📥 Received By', value: `${targetUser}`, inline: true },
-                    { name: '🪙 Amount Given', value: `${amount.toLocaleString()} tokens`, inline: true },
-                    { name: '🏦 New Balance', value: `${newBalance.toLocaleString()} tokens`, inline: true },
-                    { name: '👑 Given By', value: `${interaction.user}`, inline: true }
-                )
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
         }
