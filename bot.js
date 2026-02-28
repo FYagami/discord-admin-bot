@@ -660,7 +660,7 @@ client.on('messageCreate', async (message) => {
             return message.reply('❌ Usage: `yaga give @user <amount>` e.g. `yaga give @John 1000000`');
 
         const amount = parseAmount(amountArg);
-        if (isNaN(amount) || !Number.isFinite(amount) || amount < 1) return message.reply('❌ Invalid amount! Try `1000000`, `1M`, `1B`, `1T`, `1Q` etc.');
+        if (isNaN(amount) || !Number.isFinite(amount) || amount < 1) return message.reply('❌ Invalid amount! Try `1000000`, `1M`, `1B`, `1T`, `1Q`, `1Qn`, `Sx` etc.');
 
         let receiver = await getPlayer(targetUser.id, targetUser.username);
         if (!receiver) return message.reply('❌ Could not load target profile!');
