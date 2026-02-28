@@ -129,8 +129,13 @@ async function getPlayer(userId, username) {
 }
 
 async function updatePlayer(userId, updates) {
-    const { error } = await supabase.from('players').update(updates).eq('user_id', userId);
-    if (error) console.error('Update player error:', error.message);
+    // First try to update existing row
+    const { data, error } = await supabase.from('players').update(updates).eq('user_id', userId).select().single();
+    // If no row found (PGRST116) or data is null, do an upsert instead
+    if (error || !data) {
+        const { error: upsertErr } = await supabase.from('players').upsert([{ user_id: userId, ...updates }], { onConflict: 'user_id' });
+        if (upsertErr) console.error('Upsert player error:', upsertErr.message);
+    }
 }
 
 async function getLeaderboard() {
@@ -644,11 +649,15 @@ client.on('messageCreate', async (message) => {
         const amount = amountArg.toLowerCase() === 'all' ? 1000000 : parseInt(amountArg);
         if (isNaN(amount) || amount < 1) return message.reply('❌ Invalid amount!');
 
-        const receiver = await getPlayer(targetUser.id, targetUser.username);
+        let receiver = await getPlayer(targetUser.id, targetUser.username);
         if (!receiver) return message.reply('❌ Could not load target profile!');
 
+        // Re-fetch fresh to avoid stale cache
+        const { data: freshReceiver } = await supabase.from('players').select('*').eq('user_id', targetUser.id).single();
+        if (freshReceiver) receiver = freshReceiver;
+
         const newBalance = receiver.tokens + amount;
-        await updatePlayer(targetUser.id, { tokens: newBalance, username: targetUser.username });
+        await supabase.from('players').upsert([{ user_id: targetUser.id, username: targetUser.username, tokens: newBalance }], { onConflict: 'user_id' });
 
         const embed = new EmbedBuilder()
             .setTitle('💰 Tokens Given!')
@@ -1483,11 +1492,15 @@ client.on('interactionCreate', async interaction => {
             const targetUser = interaction.options.getUser('user');
             const amount = interaction.options.getInteger('amount');
 
-            const receiver = await getPlayer(targetUser.id, targetUser.username);
+            let receiver = await getPlayer(targetUser.id, targetUser.username);
             if (!receiver) return interaction.editReply('❌ Could not load target profile!');
 
+            // Re-fetch fresh to avoid stale data
+            const { data: freshRec } = await supabase.from('players').select('*').eq('user_id', targetUser.id).single();
+            if (freshRec) receiver = freshRec;
+
             const newBalance = receiver.tokens + amount;
-            await updatePlayer(targetUser.id, { tokens: newBalance, username: targetUser.username });
+            await supabase.from('players').upsert([{ user_id: targetUser.id, username: targetUser.username, tokens: newBalance }], { onConflict: 'user_id' });
 
             const embed = new EmbedBuilder()
                 .setTitle('💰 Tokens Given!')
