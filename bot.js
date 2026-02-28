@@ -76,7 +76,6 @@ const lockdownState = new Collection();
 const antispamEnabled = new Collection();
 // FIX #5: scheduleCounter starts at 1 but will be updated from Supabase on ready
 let scheduleCounter = 1;
-const activeEvents = new Collection();
 
 // =============================================
 // SUPABASE HELPERS — SCHEDULES
@@ -423,27 +422,6 @@ const commands = [
         .setName('leaderboard').setDescription('Top 10 richest players 🏆'),
 
     new SlashCommandBuilder()
-        .setName('tokenrain').setDescription('Drop tokens for everyone who reacts! 🎉 (Admin only)')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addIntegerOption(opt => opt.setName('amount').setDescription('Total tokens to rain').setRequired(true).setMinValue(1))
-        .addIntegerOption(opt => opt.setName('duration').setDescription('Seconds to collect (default 30)').setRequired(false).setMinValue(5).setMaxValue(300)),
-
-    new SlashCommandBuilder()
-        .setName('jackpot').setDescription('Start a jackpot — players contribute, one winner takes all! 🎰 (Admin only)')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addIntegerOption(opt => opt.setName('duration').setDescription('Seconds to accept entries (default 60)').setRequired(false).setMinValue(10).setMaxValue(300)),
-
-    new SlashCommandBuilder()
-        .setName('doubleornothing').setDescription('Start a Double or Nothing event! 💰 (Admin only)')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addIntegerOption(opt => opt.setName('duration').setDescription('Duration in minutes (default 5)').setRequired(false).setMinValue(1).setMaxValue(60))
-        .addIntegerOption(opt => opt.setName('multiplier').setDescription('Win multiplier e.g. 2 = 2x, 3 = 3x (default 2)').setRequired(false).setMinValue(2).setMaxValue(10)),
-
-    new SlashCommandBuilder()
-        .setName('jackpotjoin').setDescription('Join an active jackpot with your tokens! 🎰')
-        .addIntegerOption(opt => opt.setName('amount').setDescription('Tokens to throw into the pot').setRequired(true).setMinValue(1)),
-
-    new SlashCommandBuilder()
         .setName('help').setDescription('Show all available commands'),
 ];
 
@@ -736,7 +714,6 @@ client.on('messageCreate', async (message) => {
     }
 
     // yaga cf
-    // FIX #4 is already applied here (donEvent check is present in yaga cf)
     if (content.startsWith('yaga cf')) {
         const userId = message.author.id;
         const args = message.content.split(' ');
@@ -754,10 +731,7 @@ client.on('messageCreate', async (message) => {
         const roll = Math.random() * 100;
         const flipResult = roll < (50 + luckBonus) ? 'heads' : 'tails';
         const won = flipResult === side;
-        const donEvent = activeEvents.get(message.guild.id + '_don');
-        const donMultiplier = donEvent ? donEvent.multiplier : 1;
-        const winAmount = won ? bet * donMultiplier : bet;
-        const newTokens = won ? player.tokens + winAmount : player.tokens - bet;
+        const newTokens = won ? player.tokens + bet : player.tokens - bet;
         const newLuck = Math.max(0, player.luck_points - 1);
         await updatePlayer(userId, {
             tokens: newTokens,
@@ -767,18 +741,18 @@ client.on('messageCreate', async (message) => {
             username: message.author.username
         });
         const embed = new EmbedBuilder()
-            .setTitle(won ? `🎉 You Won${donMultiplier > 1 ? ` (${donMultiplier}x EVENT!)` : ''}!` : '💀 You Lost!')
+            .setTitle(won ? '🎉 You Won!' : '💀 You Lost!')
             .setColor(won ? 0x2ECC71 : 0xFF0000)
             .setDescription(
                 `The coin landed on **${flipResult === 'heads' ? '🔵 Heads' : '🔴 Tails'}**!\n` +
                 `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**`
             )
             .addFields(
-                { name: won ? '💰 Winnings' : '💸 Lost', value: `${formatTokens(won ? winAmount : bet)} 🪙 tokens`, inline: true },
+                { name: won ? '💰 Winnings' : '💸 Lost', value: `${formatTokens(bet)} 🪙 tokens`, inline: true },
                 { name: '🏦 Balance', value: `${formatTokens(newTokens)} 🪙`, inline: true },
                 { name: '🍀 Luck Points', value: `${newLuck}`, inline: true }
             )
-            .setFooter({ text: donMultiplier > 1 ? `🔥 ${donMultiplier}x Event Active!${luckBonus > 0 ? ` | 🍀 +${luckBonus.toFixed(1)}% luck` : ''}` : luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Use yaga pray for luck boost!' })
+            .setFooter({ text: luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Use yaga pray for luck boost!' })
             .setTimestamp();
         return message.channel.send({ embeds: [embed] });
     }
@@ -893,8 +867,6 @@ client.on('interactionCreate', async interaction => {
                     { name: '📌 Sticky & Announcements', value: '`/setsticky` — Set sticky message\n`/removesticky` — Remove sticky\n`/setannouncechannel` — Set announce channel\n`/announce` — Send announcement' },
                     { name: '📋 Mod Logs', value: '`/modlogs` — View moderation logs' },
                     { name: '🎮 Games & Economy', value: '`/daily` or `yaga daily` — Claim tokens daily\n`/wallet` or `yaga wallet [@user]` — Check tokens & luck\n`/coinflip` or `yaga cf <amount> [h/t]` — Bet tokens on a coin flip\n`yaga luck <luck> <bet> [h/t]` — Spend luck to boost a flip\n`/transfer` or `yaga transfer <amount> @user` — Send tokens\n`/pray` or `yaga pray` — Pray for luck (every 2h, requires ≥1 token)\n`/leaderboard` — Top 10 richest players' },
-                    { name: '🎪 Admin Events', value: '`/tokenrain <amount> [duration]` — Drop tokens for everyone who reacts 🎉\n`/jackpot [duration]` — Players contribute tokens, random winner takes all 🎰\n`/doubleornothing [duration] [multiplier]` — All coinflips pay Nx for a limited time 💰\n`/jackpotjoin <amount>` — Join an active jackpot' },
-                    { name: '⚠️ Important Note', value: '> 🎪 **Event commands are Admin only.**\n> ⏱️ Duration is in **seconds** for Token Rain & Jackpot.\n> 💰 Double or Nothing duration is in **minutes**.\n> 🎰 Jackpot entries require players to use `/jackpotjoin <amount>` during the event.' }
                 )
                 .setFooter({ text: 'Admin commands require Administrator permission' })
                 .setTimestamp();
@@ -1326,7 +1298,6 @@ client.on('interactionCreate', async interaction => {
         }
 
         // /coinflip
-        // FIX #4: Now checks for active doubleornothing event
         if (commandName === 'coinflip') {
             const userId = interaction.user.id;
             const side = interaction.options.getString('side');
@@ -1339,12 +1310,7 @@ client.on('interactionCreate', async interaction => {
             const roll = Math.random() * 100;
             const flipResult = roll < (50 + luckBonus) ? 'heads' : 'tails';
             const won = flipResult === side;
-
-            // FIX #4: Check for active Double or Nothing event
-            const donEvent = activeEvents.get(guild.id + '_don');
-            const donMultiplier = donEvent ? donEvent.multiplier : 1;
-            const winAmount = won ? bet * donMultiplier : bet;
-            const newTokens = won ? player.tokens + winAmount : player.tokens - bet;
+            const newTokens = won ? player.tokens + bet : player.tokens - bet;
             const newLuck = Math.max(0, player.luck_points - 1);
 
             await updatePlayer(userId, {
@@ -1355,18 +1321,18 @@ client.on('interactionCreate', async interaction => {
                 username: interaction.user.username
             });
             const embed = new EmbedBuilder()
-                .setTitle(won ? `🎉 You Won${donMultiplier > 1 ? ` (${donMultiplier}x EVENT!)` : ''}!` : '💀 You Lost!')
+                .setTitle(won ? '🎉 You Won!' : '💀 You Lost!')
                 .setColor(won ? 0x2ECC71 : 0xFF0000)
                 .setDescription(
                     `The coin landed on **${flipResult === 'heads' ? '🔵 Heads' : '🔴 Tails'}**!\n` +
                     `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**`
                 )
                 .addFields(
-                    { name: won ? '💰 Winnings' : '💸 Lost', value: `${formatTokens(won ? winAmount : bet)} 🪙 tokens`, inline: true },
+                    { name: won ? '💰 Winnings' : '💸 Lost', value: `${formatTokens(bet)} 🪙 tokens`, inline: true },
                     { name: '🏦 Balance', value: `${formatTokens(newTokens)} 🪙`, inline: true },
                     { name: '🍀 Luck Points', value: `${newLuck}`, inline: true }
                 )
-                .setFooter({ text: donMultiplier > 1 ? `🔥 ${donMultiplier}x Event Active!${luckBonus > 0 ? ` | 🍀 +${luckBonus.toFixed(1)}% luck` : ''}` : luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Pray for luck to boost your odds!' })
+                .setFooter({ text: luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Pray for luck to boost your odds!' })
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
         }
@@ -1430,162 +1396,6 @@ client.on('interactionCreate', async interaction => {
                 .setFooter({ text: 'Pray again in 2 hours!' })
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
-        }
-
-        // /tokenrain
-        if (commandName === 'tokenrain') {
-            const amount = interaction.options.getInteger('amount');
-            const duration = interaction.options.getInteger('duration') || 30;
-            if (activeEvents.get(guild.id + '_tokenrain'))
-                return interaction.editReply('❌ A Token Rain is already active!');
-            activeEvents.set(guild.id + '_tokenrain', true);
-            const embed = new EmbedBuilder()
-                .setTitle('🎉 TOKEN RAIN!')
-                .setColor(0xF1C40F)
-                .setDescription(`**${formatTokens(amount)} 🪙 tokens** are raining down!\n\nReact with 🎁 to collect your share!\n\n⏱️ You have **${duration} seconds**!`)
-                .setFooter({ text: `Started by ${interaction.user.tag}` })
-                .setTimestamp();
-            const rainMsg = await interaction.channel.send({ embeds: [embed] });
-            await rainMsg.react('🎁');
-            await interaction.editReply(`✅ Token Rain started! Dropping **${formatTokens(amount)}** tokens for ${duration}s.`);
-            setTimeout(async () => {
-                try {
-                    const fetched = await rainMsg.fetch();
-                    const reactors = await fetched.reactions.cache.get('🎁')?.users.fetch();
-                    const collectors = reactors ? [...reactors.values()].filter(u => !u.bot) : [];
-                    if (collectors.length === 0) {
-                        activeEvents.delete(guild.id + '_tokenrain');
-                        const noOneEmbed = new EmbedBuilder().setTitle('🎉 Token Rain Ended').setColor(0xFF0000)
-                            .setDescription('Nobody collected the tokens! The rain went to waste. 😢').setTimestamp();
-                        return rainMsg.edit({ embeds: [noOneEmbed] });
-                    }
-                    const share = Math.floor(amount / collectors.length);
-                    for (const user of collectors) {
-                        const player = await getPlayer(user.id, user.username);
-                        if (player) await updatePlayer(user.id, { tokens: player.tokens + share, username: user.username });
-                    }
-                    const winnerList = collectors.map(u => `<@${u.id}>`).join(', ');
-                    const endEmbed = new EmbedBuilder()
-                        .setTitle('🎉 Token Rain Ended!')
-                        .setColor(0x2ECC71)
-                        .setDescription(`**${collectors.length}** player(s) each received **${formatTokens(share)} 🪙 tokens**!`)
-                        .addFields({ name: '🎁 Collectors', value: winnerList.length > 1000 ? `${collectors.length} players` : winnerList })
-                        .setTimestamp();
-                    rainMsg.edit({ embeds: [endEmbed] });
-                } catch (err) { console.error('Token rain error:', err.message); }
-                activeEvents.delete(guild.id + '_tokenrain');
-            }, duration * 1000);
-        }
-
-        // /jackpot
-        if (commandName === 'jackpot') {
-            const duration = interaction.options.getInteger('duration') || 60;
-            if (activeEvents.get(guild.id + '_jackpot'))
-                return interaction.editReply('❌ A Jackpot is already active!');
-            const pot = { total: 0, entries: [] };
-            activeEvents.set(guild.id + '_jackpot', pot);
-            const endTime = Math.floor((Date.now() + duration * 1000) / 1000);
-            const embed = new EmbedBuilder()
-                .setTitle('🎰 JACKPOT STARTED!')
-                .setColor(0xF1C40F)
-                .setDescription(`A Jackpot event has begun!\n\nUse \`/jackpotjoin <amount>\` to throw tokens into the pot.\nOne lucky winner takes **everything**!\n\n⏱️ Entries close <t:${endTime}:R>`)
-                .addFields({ name: '💰 Current Pot', value: '0 🪙' })
-                .setFooter({ text: `Started by ${interaction.user.tag}` })
-                .setTimestamp();
-            const jackpotMsg = await interaction.channel.send({ embeds: [embed] });
-            await interaction.editReply(`✅ Jackpot started! Players have ${duration}s to enter.`);
-            activeEvents.set(guild.id + '_jackpot_msgid', jackpotMsg.id);
-            activeEvents.set(guild.id + '_jackpot_channelid', interaction.channel.id);
-            setTimeout(async () => {
-                try {
-                    const currentPot = activeEvents.get(guild.id + '_jackpot');
-                    activeEvents.delete(guild.id + '_jackpot');
-                    activeEvents.delete(guild.id + '_jackpot_msgid');
-                    activeEvents.delete(guild.id + '_jackpot_channelid');
-                    if (!currentPot || currentPot.entries.length === 0) {
-                        const noOneEmbed = new EmbedBuilder().setTitle('🎰 Jackpot Ended').setColor(0xFF0000)
-                            .setDescription('Nobody entered the jackpot! No winner. 😢').setTimestamp();
-                        return jackpotMsg.edit({ embeds: [noOneEmbed] });
-                    }
-                    const totalTickets = currentPot.entries.reduce((sum, e) => sum + e.amount, 0);
-                    let rand = Math.random() * totalTickets;
-                    let winner = currentPot.entries[0];
-                    for (const entry of currentPot.entries) {
-                        rand -= entry.amount;
-                        if (rand <= 0) { winner = entry; break; }
-                    }
-                    const winnerPlayer = await getPlayer(winner.userId, winner.username);
-                    if (winnerPlayer) await updatePlayer(winner.userId, { tokens: winnerPlayer.tokens + currentPot.total, username: winner.username });
-                    const entryList = currentPot.entries.map(e => `<@${e.userId}> — ${formatTokens(e.amount)} 🪙`).join('\n');
-                    const endEmbed = new EmbedBuilder()
-                        .setTitle('🎰 JACKPOT WINNER!')
-                        .setColor(0xF1C40F)
-                        .setDescription(`🏆 <@${winner.userId}> **won the jackpot!**\n💰 Prize: **${formatTokens(currentPot.total)} 🪙 tokens**`)
-                        .addFields({ name: '📋 Entries', value: entryList.length > 1000 ? `${currentPot.entries.length} players entered` : entryList })
-                        .setFooter({ text: 'Higher contribution = higher chance of winning!' })
-                        .setTimestamp();
-                    jackpotMsg.edit({ embeds: [endEmbed] });
-                } catch (err) { console.error('Jackpot end error:', err.message); }
-            }, duration * 1000);
-        }
-
-        // /jackpotjoin
-        if (commandName === 'jackpotjoin') {
-            const amount = interaction.options.getInteger('amount');
-            const pot = activeEvents.get(guild.id + '_jackpot');
-            if (!pot) return interaction.editReply('❌ No Jackpot is active right now!');
-            const player = await getPlayer(interaction.user.id, interaction.user.username);
-            if (!player) return interaction.editReply('❌ Could not load your profile!');
-            if (player.tokens < amount) return interaction.editReply(`❌ Not enough tokens! You have **${formatTokens(player.tokens)} 🪙**.`);
-            const existing = pot.entries.find(e => e.userId === interaction.user.id);
-            if (existing) {
-                existing.amount += amount;
-            } else {
-                pot.entries.push({ userId: interaction.user.id, username: interaction.user.username, amount });
-            }
-            pot.total += amount;
-            await updatePlayer(interaction.user.id, { tokens: player.tokens - amount });
-            try {
-                const channelId = activeEvents.get(guild.id + '_jackpot_channelid');
-                const msgId = activeEvents.get(guild.id + '_jackpot_msgid');
-                if (channelId && msgId) {
-                    const ch = guild.channels.cache.get(channelId);
-                    const msg = await ch?.messages.fetch(msgId);
-                    if (msg) {
-                        const updatedEmbed = EmbedBuilder.from(msg.embeds[0])
-                            .spliceFields(0, 1, { name: '💰 Current Pot', value: `${formatTokens(pot.total)} 🪙 (${pot.entries.length} entries)` });
-                        await msg.edit({ embeds: [updatedEmbed] });
-                    }
-                }
-            } catch {}
-            return interaction.editReply({ content: `✅ You entered **${formatTokens(amount)} 🪙** into the jackpot! Good luck! 🎰`, ephemeral: true });
-        }
-
-        // /doubleornothing
-        if (commandName === 'doubleornothing') {
-            const duration = interaction.options.getInteger('duration') || 5;
-            const multiplier = interaction.options.getInteger('multiplier') || 2;
-            if (activeEvents.get(guild.id + '_don'))
-                return interaction.editReply('❌ A Double or Nothing event is already active!');
-            activeEvents.set(guild.id + '_don', { multiplier });
-            const endTime = Math.floor((Date.now() + duration * 60 * 1000) / 1000);
-            const embed = new EmbedBuilder()
-                .setTitle(`💰 ${multiplier}X OR NOTHING EVENT!`)
-                .setColor(0xFF6B00)
-                .setDescription(`All coinflips now pay **${multiplier}x** for the next **${duration} minute(s)**!\n\nUse \`yaga cf\` or \`/coinflip\` to play!\n\n⏱️ Event ends <t:${endTime}:R>`)
-                .setFooter({ text: `Started by ${interaction.user.tag}` })
-                .setTimestamp();
-            await interaction.channel.send({ embeds: [embed] });
-            await interaction.editReply(`✅ ${multiplier}x event started for ${duration} minute(s)!`);
-            setTimeout(async () => {
-                activeEvents.delete(guild.id + '_don');
-                const endEmbed = new EmbedBuilder()
-                    .setTitle('💰 Double or Nothing Event Ended!')
-                    .setColor(0xFF0000)
-                    .setDescription('The event is over. Coinflips are back to normal **1x** payouts.')
-                    .setTimestamp();
-                interaction.channel.send({ embeds: [endEmbed] }).catch(() => {});
-            }, duration * 60 * 1000);
         }
 
         // /setsticky
