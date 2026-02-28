@@ -36,6 +36,23 @@ if (!BOT_TOKEN || !CLIENT_ID || !SUPABASE_URL || !SUPABASE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 
+
+// =============================================
+// AMOUNT PARSER (supports 1M, 1B, 1T, 1Q etc.)
+// =============================================
+function parseAmount(str) {
+    if (!str) return NaN;
+    const s = str.toString().trim().toLowerCase();
+    const suffixes = { k: 1e3, m: 1e6, b: 1e9, t: 1e12, q: 1e15, qn: 1e18, sx: 1e21, sp: 1e24, oc: 1e27, no: 1e30, dc: 1e33 };
+    for (const [suffix, multiplier] of Object.entries(suffixes)) {
+        if (s.endsWith(suffix)) {
+            const num = parseFloat(s.slice(0, -suffix.length));
+            return isNaN(num) ? NaN : Math.floor(num * multiplier);
+        }
+    }
+    return Number(s);
+}
+
 // =============================================
 // NUMBER FORMATTER
 // =============================================
@@ -642,8 +659,8 @@ client.on('messageCreate', async (message) => {
         if (!targetUser || !amountArg)
             return message.reply('❌ Usage: `yaga give @user <amount>` e.g. `yaga give @John 1000000`');
 
-        const amount = amountArg.toLowerCase() === 'all' ? 1000000 : parseInt(amountArg);
-        if (isNaN(amount) || amount < 1) return message.reply('❌ Invalid amount!');
+        const amount = parseAmount(amountArg);
+        if (isNaN(amount) || !Number.isFinite(amount) || amount < 1) return message.reply('❌ Invalid amount! Try `1000000`, `1M`, `1B`, `1T`, `1Q` etc.');
 
         let receiver = await getPlayer(targetUser.id, targetUser.username);
         if (!receiver) return message.reply('❌ Could not load target profile!');
@@ -685,8 +702,8 @@ client.on('messageCreate', async (message) => {
         if (!targetUser || !amountArg)
             return message.reply('❌ Usage: `!givetoken @user <amount>` e.g. `!givetoken @John 1000000`');
 
-        const amount = parseInt(amountArg);
-        if (isNaN(amount) || amount < 1) return message.reply('❌ Invalid amount!');
+        const amount = parseAmount(amountArg);
+        if (isNaN(amount) || !Number.isFinite(amount) || amount < 1) return message.reply('❌ Invalid amount! Try `1000000`, `1M`, `1B`, `1T`, `1Q` etc.');
 
         let receiver = await getPlayer(targetUser.id, targetUser.username);
         if (!receiver) return message.reply('❌ Could not load target profile!');
