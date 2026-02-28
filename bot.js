@@ -503,6 +503,10 @@ client.on('messageCreate', async (message) => {
         const player = await getPlayer(userId, message.author.username);
         if (!player) return message.reply('❌ Could not load your profile!');
 
+        // Anti-abuse: must have at least 1 token to pray
+        if (player.tokens <= 0)
+            return message.reply('❌ You need at least **1 token** to pray! Use `yaga daily` to earn tokens first. 🙏');
+
         const now = new Date();
         const cooldownMs = (Math.random() < 0.5 ? 1 : 2) * 60 * 60 * 1000;
 
@@ -576,6 +580,86 @@ client.on('messageCreate', async (message) => {
     }
 
     // -----------------------------------------------
+    // yaga luck — spend luck points to boost a coinflip
+    // Usage: yaga luck <amount or all> <bet> [heads/tails/h/t]
+    // Example: yaga luck 5 1000 heads
+    // -----------------------------------------------
+    if (content.startsWith('yaga luck')) {
+        const userId = message.author.id;
+        const args = message.content.trim().split(/\s+/);
+        // args: ['yaga', 'luck', '<luck_amount>', '<bet>', '[side]']
+        const luckArg = args[2];
+        const betArg = args[3];
+        const sideArg = (args[4] || '').toLowerCase();
+        const side = (sideArg === 'tails' || sideArg === 't') ? 'tails' : 'heads';
+
+        if (!luckArg || !betArg) {
+            return message.reply('❌ Usage: `yaga luck <luck amount or all> <bet> [h/t]`\ne.g. `yaga luck 5 1000 heads` or `yaga luck all 500`');
+        }
+
+        const player = await getPlayer(userId, message.author.username);
+        if (!player) return message.reply('❌ Could not load your profile!');
+
+        if (player.tokens <= 0)
+            return message.reply('❌ You need tokens to flip! Use `yaga daily` to earn some. 🪙');
+        if (player.luck_points <= 0)
+            return message.reply('❌ You have no luck points to spend! Use `yaga pray` first. 🍀');
+
+        // Resolve luck amount
+        const luckToSpend = luckArg.toLowerCase() === 'all' ? player.luck_points : parseInt(luckArg);
+        if (isNaN(luckToSpend) || luckToSpend < 1)
+            return message.reply('❌ Invalid luck amount! Must be a positive number or `all`.');
+        if (luckToSpend > player.luck_points)
+            return message.reply(`❌ Not enough luck points! You only have **${player.luck_points} 🍀**.`);
+
+        // Resolve bet amount
+        const bet = betArg.toLowerCase() === 'all' ? player.tokens : parseInt(betArg);
+        if (isNaN(bet) || bet < 1) return message.reply('❌ Invalid bet amount!');
+        if (player.tokens < bet)
+            return message.reply(`❌ Not enough tokens! You only have **${player.tokens} 🪙**.`);
+
+        // Each luck point spent = +2% win chance boost (capped at +40% total from this command)
+        const luckBoostRaw = luckToSpend * 2;
+        const luckBoost = Math.min(luckBoostRaw, 40);
+        // Base 50% + existing passive luck bonus (0.5 per point, cap 10%) + active luck boost
+        const passiveBonus = Math.min(player.luck_points * 0.5, 10); // from remaining luck after spend
+        const totalWinChance = Math.min(50 + passiveBonus + luckBoost, 90); // hard cap at 90%
+
+        const roll = Math.random() * 100;
+        const flipResult = roll < totalWinChance ? side : (side === 'heads' ? 'tails' : 'heads');
+        const won = flipResult === side;
+
+        const newTokens = won ? player.tokens + bet : player.tokens - bet;
+        const newLuck = player.luck_points - luckToSpend;
+
+        await updatePlayer(userId, {
+            tokens: newTokens,
+            luck_points: newLuck,
+            total_wins: won ? player.total_wins + 1 : player.total_wins,
+            total_losses: won ? player.total_losses : player.total_losses + 1,
+            username: message.author.username
+        });
+
+        const embed = new EmbedBuilder()
+            .setTitle(won ? '🎉 Lucky Flip — You Won!' : '💀 Lucky Flip — You Lost!')
+            .setColor(won ? 0x2ECC71 : 0xFF0000)
+            .setDescription(
+                `The coin landed on **${flipResult === 'heads' ? '🔵 Heads' : '🔴 Tails'}**!\n` +
+                `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**`
+            )
+            .addFields(
+                { name: won ? '💰 Winnings' : '💸 Lost', value: `${bet} 🪙 tokens`, inline: true },
+                { name: '🏦 Balance', value: `${newTokens} 🪙`, inline: true },
+                { name: '🍀 Luck Spent', value: `${luckToSpend} pts`, inline: true },
+                { name: '🎯 Win Chance Used', value: `${totalWinChance.toFixed(1)}%`, inline: true },
+                { name: '🍀 Luck Remaining', value: `${newLuck}`, inline: true }
+            )
+            .setFooter({ text: `Active luck boost: +${luckBoost}% | Use yaga pray to refill luck!` })
+            .setTimestamp();
+        return message.channel.send({ embeds: [embed] });
+    }
+
+    // -----------------------------------------------
     // yaga cf shortcut
     // Usage: yaga cf <amount or all> [heads/tails/h/t]
     // -----------------------------------------------
@@ -617,8 +701,7 @@ client.on('messageCreate', async (message) => {
             .setColor(won ? 0x2ECC71 : 0xFF0000)
             .setDescription(
                 `The coin landed on **${flipResult === 'heads' ? '🔵 Heads' : '🔴 Tails'}**!\n` +
-                `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**` +
-                (side === 'heads' && !sideArg ? ' *(auto-selected)*' : '')
+                `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**`
             )
             .addFields(
                 { name: won ? '💰 Winnings' : '💸 Lost', value: `${bet} 🪙 tokens`, inline: true },
@@ -742,7 +825,7 @@ client.on('interactionCreate', async interaction => {
                     { name: '📅 Scheduled Messages', value: '`/schedule_msg` — Schedule a message\n`/list_schedules` — List this server schedules\n`/list_all_schedules` — List all schedules\n`/cancel_schedule` — Cancel a schedule' },
                     { name: '📌 Sticky & Announcements', value: '`/setsticky` — Set sticky message\n`/removesticky` — Remove sticky\n`/setannouncechannel` — Set announce channel\n`/announce` — Send announcement' },
                     { name: '📋 Mod Logs', value: '`/modlogs` — View moderation logs' },
-                    { name: '🎮 Games & Economy', value: '`/daily` or `yaga daily` — Claim tokens daily\n`/wallet` or `yaga wallet [@user]` — Check tokens & luck\n`/coinflip` or `yaga cf <amount> [h/t]` — Bet tokens on a coin flip\n`/transfer` or `yaga transfer <amount> @user` — Send tokens\n`/pray` or `yaga pray` — Pray for luck (every 1-2h)\n`/leaderboard` — Top 10 richest players' }
+                    { name: '🎮 Games & Economy', value: '`/daily` or `yaga daily` — Claim tokens daily\n`/wallet` or `yaga wallet [@user]` — Check tokens & luck\n`/coinflip` or `yaga cf <amount> [h/t]` — Bet tokens on a coin flip\n`yaga luck <luck> <bet> [h/t]` — Spend luck to boost a flip (each luck pt = +2% win chance)\n`/transfer` or `yaga transfer <amount> @user` — Send tokens\n`/pray` or `yaga pray` — Pray for luck (every 1-2h, requires ≥1 token)\n`/leaderboard` — Top 10 richest players' }
                 )
                 .setFooter({ text: 'Admin commands require Administrator permission' })
                 .setTimestamp();
@@ -1269,6 +1352,10 @@ client.on('interactionCreate', async interaction => {
             const player = await getPlayer(userId, interaction.user.username);
             if (!player) return interaction.editReply('❌ Could not load your profile!');
 
+            // Anti-abuse: must have at least 1 token to pray
+            if (player.tokens <= 0)
+                return interaction.editReply('❌ You need at least **1 token** to pray! Use `/daily` to earn tokens first. 🙏');
+
             const now = new Date();
             const cooldownMs = (Math.random() < 0.5 ? 1 : 2) * 60 * 60 * 1000;
 
@@ -1399,7 +1486,7 @@ client.on('interactionCreate', async interaction => {
                 .setTitle('🏆 Token Leaderboard')
                 .setColor(0xF1C40F)
                 .setDescription(desc)
-                .setFooter({ text: 'Use /daily, /coinflip, and /pray to earn more!' })
+                .setFooter({ text: 'Use /daily, yaga cf, yaga luck, and /pray to earn more!' })
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
         }
