@@ -35,8 +35,6 @@ if (!BOT_TOKEN || !CLIENT_ID || !SUPABASE_URL || !SUPABASE_KEY) {
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-
-
 // =============================================
 // AMOUNT PARSER (supports 1M, 1B, 1T, 1Q etc.)
 // =============================================
@@ -76,8 +74,9 @@ const MUTE_DURATION = 3600;
 const welcomeConfig = new Collection();
 const lockdownState = new Collection();
 const antispamEnabled = new Collection();
+// FIX #5: scheduleCounter starts at 1 but will be updated from Supabase on ready
 let scheduleCounter = 1;
-const activeEvents = new Collection(); // tracks active events per guild (tokenrain, jackpot, doubleornothing)
+const activeEvents = new Collection();
 
 // =============================================
 // SUPABASE HELPERS — SCHEDULES
@@ -121,6 +120,16 @@ async function getAllSchedules() {
     return data || [];
 }
 
+// FIX #5: Init schedule counter from Supabase so IDs don't reset/duplicate on restart
+async function initScheduleCounter() {
+    const { data } = await supabase.from('schedules').select('id');
+    if (data && data.length > 0) {
+        const maxId = Math.max(...data.map(s => parseInt(s.id.replace('SCH-', '')) || 0));
+        scheduleCounter = maxId + 1;
+        console.log(`✅ Schedule counter initialized to ${scheduleCounter}`);
+    }
+}
+
 // =============================================
 // SUPABASE HELPERS — GAME (tokens, luck)
 // =============================================
@@ -146,9 +155,7 @@ async function getPlayer(userId, username) {
 }
 
 async function updatePlayer(userId, updates) {
-    // First try to update existing row
     const { data, error } = await supabase.from('players').update(updates).eq('user_id', userId).select().single();
-    // If no row found (PGRST116) or data is null, do an upsert instead
     if (error || !data) {
         const { error: upsertErr } = await supabase.from('players').upsert([{ user_id: userId, ...updates }], { onConflict: 'user_id' });
         if (upsertErr) console.error('Upsert player error:', upsertErr.message);
@@ -410,11 +417,10 @@ const commands = [
         .addIntegerOption(opt => opt.setName('amount').setDescription('How many tokens to send').setRequired(true).setMinValue(1)),
 
     new SlashCommandBuilder()
-        .setName('pray').setDescription('Pray to the gods for luck points 🙏 (once every 1-2 hours)'),
+        .setName('pray').setDescription('Pray to the gods for luck points 🙏 (once every 2 hours)'),
 
     new SlashCommandBuilder()
         .setName('leaderboard').setDescription('Top 10 richest players 🏆'),
-
 
     new SlashCommandBuilder()
         .setName('tokenrain').setDescription('Drop tokens for everyone who reacts! 🎉 (Admin only)')
@@ -439,15 +445,16 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('help').setDescription('Show all available commands'),
-
-
 ];
 
 async function registerCommands() {
     const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
     try {
+        // FIX #1: Register globally (commands appear in all servers after ~1 hour)
+        // For INSTANT testing in one server, replace with:
+        // await rest.put(Routes.applicationGuildCommands(CLIENT_ID, 'YOUR_GUILD_ID'), { body: commands.map(c => c.toJSON()) });
         await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands.map(c => c.toJSON()) });
-        console.log('✅ Global slash commands registered!');
+        console.log('✅ Global slash commands registered! (May take up to 1 hour to appear)');
     } catch (err) {
         console.error('❌ Failed to register commands:', err.message);
     }
@@ -463,17 +470,13 @@ client.on('messageCreate', async (message) => {
     const guildId = message.guild.id;
     const content = message.content.toLowerCase().trim();
 
-    // -----------------------------------------------
-    // yaga cash shortcut (alias for yaga wallet self)
-    // -----------------------------------------------
+    // yaga cash
     if (content === 'yaga cash') {
         const player = await getPlayer(message.author.id, message.author.username);
         if (!player) return message.reply('❌ Could not load your profile!');
-
         const winRate = (player.total_wins + player.total_losses) > 0
             ? ((player.total_wins / (player.total_wins + player.total_losses)) * 100).toFixed(1)
             : '0.0';
-
         const embed = new EmbedBuilder()
             .setTitle(`👛 ${message.author.username}'s Wallet`)
             .setColor(0xF1C40F)
@@ -489,20 +492,15 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
-    // -----------------------------------------------
-    // yaga wallet — check your own or another user's wallet
-    // Usage: yaga wallet | yaga wallet @user
-    // -----------------------------------------------
+    // yaga wallet
     if (content === 'yaga wallet' || content.startsWith('yaga wallet ')) {
         const mention = message.mentions.users.first();
         const targetUser = mention || message.author;
         const player = await getPlayer(targetUser.id, targetUser.username);
         if (!player) return message.reply('❌ Could not load profile!');
-
         const winRate = (player.total_wins + player.total_losses) > 0
             ? ((player.total_wins / (player.total_wins + player.total_losses)) * 100).toFixed(1)
             : '0.0';
-
         const embed = new EmbedBuilder()
             .setTitle(`👛 ${targetUser.username}'s Wallet`)
             .setColor(0xF1C40F)
@@ -518,33 +516,22 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
-    // -----------------------------------------------
-    // yaga daily — claim daily tokens
-    // Usage: yaga daily
-    // -----------------------------------------------
+    // yaga daily
     if (content === 'yaga daily') {
         const userId = message.author.id;
         const player = await getPlayer(userId, message.author.username);
         if (!player) return message.reply('❌ Could not load your profile!');
-
         const now = new Date();
         const phtOffset = 8 * 60 * 60 * 1000;
         const phtNow = new Date(now.getTime() + phtOffset);
         const phtMidnight = new Date(Date.UTC(phtNow.getUTCFullYear(), phtNow.getUTCMonth(), phtNow.getUTCDate()) - phtOffset);
-
         if (player.last_daily && new Date(player.last_daily) >= phtMidnight) {
             const nextMidnight = new Date(phtMidnight.getTime() + 24 * 60 * 60 * 1000);
             const unixNext = Math.floor(nextMidnight.getTime() / 1000);
             return message.reply(`⏳ You already claimed your daily reward! Come back <t:${unixNext}:R>.`);
         }
-
         const reward = Math.floor(Math.random() * 4001) + 1000;
-        await updatePlayer(userId, {
-            tokens: player.tokens + reward,
-            last_daily: now.toISOString(),
-            username: message.author.username
-        });
-
+        await updatePlayer(userId, { tokens: player.tokens + reward, last_daily: now.toISOString(), username: message.author.username });
         const embed = new EmbedBuilder()
             .setTitle('🎁 Daily Reward Claimed!')
             .setColor(0xF1C40F)
@@ -558,31 +545,23 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
-    // -----------------------------------------------
-    // yaga pray — pray for luck points
-    // Usage: yaga pray
-    // -----------------------------------------------
+    // yaga pray
+    // FIX #3: Fixed cooldown — no longer randomized on every check
     if (content === 'yaga pray') {
         const userId = message.author.id;
         const player = await getPlayer(userId, message.author.username);
         if (!player) return message.reply('❌ Could not load your profile!');
-
-        // Anti-abuse: must have at least 1 token to pray
         if (player.tokens <= 0)
             return message.reply('❌ You need at least **1 token** to pray! Use `yaga daily` to earn tokens first. 🙏');
-
         const now = new Date();
-        const cooldownMs = (Math.random() < 0.5 ? 1 : 2) * 60 * 60 * 1000;
-
-        if (player.last_pray && (now - new Date(player.last_pray)) < cooldownMs) {
-            const nextPray = Math.floor((new Date(player.last_pray).getTime() + cooldownMs) / 1000);
+        const PRAY_COOLDOWN_MS = 2 * 60 * 60 * 1000; // Fixed 2 hours
+        if (player.last_pray && (now - new Date(player.last_pray)) < PRAY_COOLDOWN_MS) {
+            const nextPray = Math.floor((new Date(player.last_pray).getTime() + PRAY_COOLDOWN_MS) / 1000);
             return message.reply(`🙏 The gods need time to listen... Pray again <t:${nextPray}:R>.`);
         }
-
         const luckGained = Math.floor(Math.random() * 10) + 1;
         const newLuck = player.luck_points + luckGained;
         await updatePlayer(userId, { luck_points: newLuck, last_pray: now.toISOString() });
-
         let feelMsg;
         if (luckGained <= 2) feelMsg = 'You feel a little lucky...';
         else if (luckGained <= 4) feelMsg = 'You feel slightly lucky.';
@@ -590,46 +569,34 @@ client.on('messageCreate', async (message) => {
         else if (luckGained <= 8) feelMsg = 'You feel very lucky!';
         else if (luckGained === 9) feelMsg = 'You feel extremely lucky!!';
         else feelMsg = 'You feel INCREDIBLY lucky!!!';
-
         const embed = new EmbedBuilder()
             .setTitle('🙏 Prayer')
             .setColor(0x9B59B6)
             .setDescription(`${message.author} prays... ${feelMsg}\nYou gained **+${luckGained} luck points**!\nYou now have **${newLuck} luck point(s)**!`)
-            .setFooter({ text: 'Pray again in 1–2 hours!' })
+            .setFooter({ text: 'Pray again in 2 hours!' })
             .setTimestamp();
         return message.channel.send({ embeds: [embed] });
     }
 
-    // -----------------------------------------------
-    // yaga transfer — send tokens to another user
-    // Usage: yaga transfer <amount> @user
-    // -----------------------------------------------
+    // yaga transfer
     if (content.startsWith('yaga transfer')) {
         const args = message.content.trim().split(/\s+/);
-        // args: ['yaga', 'transfer', '<amount>', '@user']
         const amountArg = args[2];
         const targetUser = message.mentions.users.first();
-
-        if (!amountArg || !targetUser) {
+        if (!amountArg || !targetUser)
             return message.reply('❌ Usage: `yaga transfer <amount> @user` e.g. `yaga transfer 500 @John`');
-        }
-
         const amount = parseInt(amountArg);
         if (isNaN(amount) || amount < 1) return message.reply('❌ Invalid amount! Must be a positive number.');
         if (targetUser.id === message.author.id) return message.reply('❌ You cannot transfer tokens to yourself!');
         if (targetUser.bot) return message.reply('❌ You cannot transfer tokens to a bot!');
-
         const sender = await getPlayer(message.author.id, message.author.username);
         if (!sender) return message.reply('❌ Could not load your profile!');
         if (sender.tokens < amount)
             return message.reply(`❌ Not enough tokens! You only have **${formatTokens(sender.tokens)} 🪙**.`);
-
         const receiver = await getPlayer(targetUser.id, targetUser.username);
         if (!receiver) return message.reply('❌ Could not load target profile!');
-
         await updatePlayer(message.author.id, { tokens: sender.tokens - amount });
         await updatePlayer(targetUser.id, { tokens: receiver.tokens + amount, username: targetUser.username });
-
         const embed = new EmbedBuilder()
             .setTitle('💸 Token Transfer Complete!')
             .setColor(0x3498DB)
@@ -643,35 +610,24 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
-    // -----------------------------------------------
-    // yaga give — admin gives tokens to a player
-    // Usage: yaga give @user <amount>
-    // -----------------------------------------------
+    // yaga give (owner only)
     if (content.startsWith('yaga give')) {
-        if (message.author.id !== '470424469446590474') {
-            return message.reply({ content: '❌ Only the bot owner can use this command!', ephemeral: true }).catch(() => {});
-        }
-
+        if (message.author.id !== '470424469446590474')
+            return message.reply({ content: '❌ Only the bot owner can use this command!' }).catch(() => {});
         const args = message.content.trim().split(/\s+/);
         const targetUser = message.mentions.users.first();
         const amountArg = args[3];
-
         if (!targetUser || !amountArg)
-            return message.reply('❌ Usage: `yaga give @user <amount>` e.g. `yaga give @John 1000000`');
-
+            return message.reply('❌ Usage: `yaga give @user <amount>`');
         const amount = parseAmount(amountArg);
-        if (isNaN(amount) || !Number.isFinite(amount) || amount < 1) return message.reply('❌ Invalid amount! Try `1000000`, `1M`, `1B`, `1T`, `1Q`, `1Qn`, `Sx` etc.');
-
+        if (isNaN(amount) || !Number.isFinite(amount) || amount < 1)
+            return message.reply('❌ Invalid amount! Try `1000000`, `1M`, `1B`, `1T`, `1Q` etc.');
         let receiver = await getPlayer(targetUser.id, targetUser.username);
         if (!receiver) return message.reply('❌ Could not load target profile!');
-
-        // Re-fetch fresh to avoid stale cache
         const { data: freshReceiver } = await supabase.from('players').select('*').eq('user_id', targetUser.id).single();
         if (freshReceiver) receiver = freshReceiver;
-
         const newBalance = receiver.tokens + amount;
         await supabase.from('players').upsert([{ user_id: targetUser.id, username: targetUser.username, tokens: newBalance }], { onConflict: 'user_id' });
-
         const embed = new EmbedBuilder()
             .setTitle('💰 Tokens Given!')
             .setColor(0xF1C40F)
@@ -686,37 +642,25 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
-    // -----------------------------------------------
-    // !givetoken — owner-only hidden token give
-    // Usage: !givetoken @user <amount>
-    // -----------------------------------------------
+    // !givetoken (owner only, hidden)
     if (message.content.toLowerCase().startsWith('!givetoken')) {
-        if (message.author.id !== '470424469446590474') {
-            return message.reply({ content: '❌ Only the bot owner can use this command!', ephemeral: true }).catch(() => {});
-        }
-
+        if (message.author.id !== '470424469446590474')
+            return message.reply({ content: '❌ Only the bot owner can use this command!' }).catch(() => {});
         const args = message.content.trim().split(/\s+/);
         const targetUser = message.mentions.users.first();
         const amountArg = args[2];
-
         if (!targetUser || !amountArg)
-            return message.reply('❌ Usage: `!givetoken @user <amount>` e.g. `!givetoken @John 1000000`');
-
+            return message.reply('❌ Usage: `!givetoken @user <amount>`');
         const amount = parseAmount(amountArg);
-        if (isNaN(amount) || !Number.isFinite(amount) || amount < 1) return message.reply('❌ Invalid amount! Try `1000000`, `1M`, `1B`, `1T`, `1Q` etc.');
-
+        if (isNaN(amount) || !Number.isFinite(amount) || amount < 1)
+            return message.reply('❌ Invalid amount!');
         let receiver = await getPlayer(targetUser.id, targetUser.username);
         if (!receiver) return message.reply('❌ Could not load target profile!');
-
         const { data: freshReceiver } = await supabase.from('players').select('*').eq('user_id', targetUser.id).single();
         if (freshReceiver) receiver = freshReceiver;
-
         const newBalance = receiver.tokens + amount;
         await supabase.from('players').upsert([{ user_id: targetUser.id, username: targetUser.username, tokens: newBalance }], { onConflict: 'user_id' });
-
-        // Delete the command message so no one sees it
         await message.delete().catch(() => {});
-
         const embed = new EmbedBuilder()
             .setTitle('💰 Tokens Given!')
             .setColor(0xF1C40F)
@@ -731,59 +675,40 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
-    // -----------------------------------------------
-    // yaga luck — spend luck points to boost a coinflip
-    // Usage: yaga luck <amount or all> <bet> [heads/tails/h/t]
-    // Example: yaga luck 5 1000 heads
-    // -----------------------------------------------
+    // yaga luck
     if (content.startsWith('yaga luck')) {
         const userId = message.author.id;
         const args = message.content.trim().split(/\s+/);
-        // args: ['yaga', 'luck', '<luck_amount>', '<bet>', '[side]']
         const luckArg = args[2];
         const betArg = args[3];
         const sideArg = (args[4] || '').toLowerCase();
         const side = (sideArg === 'tails' || sideArg === 't') ? 'tails' : 'heads';
-
-        if (!luckArg || !betArg) {
-            return message.reply('❌ Usage: `yaga luck <luck amount or all> <bet> [h/t]`\ne.g. `yaga luck 5 1000 heads` or `yaga luck all 500`');
-        }
-
+        if (!luckArg || !betArg)
+            return message.reply('❌ Usage: `yaga luck <luck amount or all> <bet> [h/t]`\ne.g. `yaga luck 5 1000 heads`');
         const player = await getPlayer(userId, message.author.username);
         if (!player) return message.reply('❌ Could not load your profile!');
-
         if (player.tokens <= 0)
             return message.reply('❌ You need tokens to flip! Use `yaga daily` to earn some. 🪙');
         if (player.luck_points <= 0)
             return message.reply('❌ You have no luck points to spend! Use `yaga pray` first. 🍀');
-
-        // Resolve luck amount
         const luckToSpend = luckArg.toLowerCase() === 'all' ? player.luck_points : parseInt(luckArg);
         if (isNaN(luckToSpend) || luckToSpend < 1)
-            return message.reply('❌ Invalid luck amount! Must be a positive number or `all`.');
+            return message.reply('❌ Invalid luck amount!');
         if (luckToSpend > player.luck_points)
             return message.reply(`❌ Not enough luck points! You only have **${player.luck_points} 🍀**.`);
-
-        // Resolve bet amount
         const bet = betArg.toLowerCase() === 'all' ? player.tokens : parseInt(betArg);
         if (isNaN(bet) || bet < 1) return message.reply('❌ Invalid bet amount!');
         if (player.tokens < bet)
             return message.reply(`❌ Not enough tokens! You only have **${formatTokens(player.tokens)} 🪙**.`);
-
-        // Each luck point spent = +2% win chance boost (capped at +40% total from this command)
         const luckBoostRaw = luckToSpend * 2;
         const luckBoost = Math.min(luckBoostRaw, 40);
-        // Base 50% + existing passive luck bonus (0.5 per point, cap 10%) + active luck boost
-        const passiveBonus = Math.min(player.luck_points * 0.5, 10); // from remaining luck after spend
-        const totalWinChance = Math.min(50 + passiveBonus + luckBoost, 90); // hard cap at 90%
-
+        const passiveBonus = Math.min(player.luck_points * 0.5, 10);
+        const totalWinChance = Math.min(50 + passiveBonus + luckBoost, 90);
         const roll = Math.random() * 100;
         const flipResult = roll < totalWinChance ? side : (side === 'heads' ? 'tails' : 'heads');
         const won = flipResult === side;
-
         const newTokens = won ? player.tokens + bet : player.tokens - bet;
         const newLuck = player.luck_points - luckToSpend;
-
         await updatePlayer(userId, {
             tokens: newTokens,
             luck_points: newLuck,
@@ -791,7 +716,6 @@ client.on('messageCreate', async (message) => {
             total_losses: won ? player.total_losses : player.total_losses + 1,
             username: message.author.username
         });
-
         const embed = new EmbedBuilder()
             .setTitle(won ? '🎉 Lucky Flip — You Won!' : '💀 Lucky Flip — You Lost!')
             .setColor(won ? 0x2ECC71 : 0xFF0000)
@@ -811,38 +735,30 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
-    // -----------------------------------------------
-    // yaga cf shortcut
-    // Usage: yaga cf <amount or all> [heads/tails/h/t]
-    // -----------------------------------------------
+    // yaga cf
+    // FIX #4 is already applied here (donEvent check is present in yaga cf)
     if (content.startsWith('yaga cf')) {
         const userId = message.author.id;
         const args = message.content.split(' ');
         const betArg = args[2];
         const sideArg = (args[3] || '').toLowerCase();
         const side = (sideArg === 'tails' || sideArg === 't') ? 'tails' : 'heads';
-
         if (!betArg) return message.reply('❌ Usage: `yaga cf <amount or all>` e.g. `yaga cf 500` or `yaga cf all`');
-
         const player = await getPlayer(userId, message.author.username);
         if (!player) return message.reply('❌ Could not load your profile!');
         if (player.tokens <= 0) return message.reply('❌ You have no tokens! Use `yaga daily` to get some.');
-
         const bet = betArg.toLowerCase() === 'all' ? player.tokens : parseInt(betArg);
         if (isNaN(bet) || bet < 1) return message.reply('❌ Invalid bet amount!');
         if (player.tokens < bet) return message.reply(`❌ Not enough tokens! You only have **${formatTokens(player.tokens)} 🪙**.`);
-
         const luckBonus = Math.min(player.luck_points * 0.5, 10);
         const roll = Math.random() * 100;
         const flipResult = roll < (50 + luckBonus) ? 'heads' : 'tails';
         const won = flipResult === side;
-
         const donEvent = activeEvents.get(message.guild.id + '_don');
         const donMultiplier = donEvent ? donEvent.multiplier : 1;
         const winAmount = won ? bet * donMultiplier : bet;
         const newTokens = won ? player.tokens + winAmount : player.tokens - bet;
         const newLuck = Math.max(0, player.luck_points - 1);
-
         await updatePlayer(userId, {
             tokens: newTokens,
             luck_points: newLuck,
@@ -850,7 +766,6 @@ client.on('messageCreate', async (message) => {
             total_losses: won ? player.total_losses : player.total_losses + 1,
             username: message.author.username
         });
-
         const embed = new EmbedBuilder()
             .setTitle(won ? `🎉 You Won${donMultiplier > 1 ? ` (${donMultiplier}x EVENT!)` : ''}!` : '💀 You Lost!')
             .setColor(won ? 0x2ECC71 : 0xFF0000)
@@ -863,7 +778,7 @@ client.on('messageCreate', async (message) => {
                 { name: '🏦 Balance', value: `${formatTokens(newTokens)} 🪙`, inline: true },
                 { name: '🍀 Luck Points', value: `${newLuck}`, inline: true }
             )
-            .setFooter({ text: donMultiplier > 1 ? `🔥 ${donMultiplier}x Event Active! ${luckBonus > 0 ? `| 🍀 +${luckBonus.toFixed(1)}% luck` : ''}` : luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Use yaga pray for luck boost!' })
+            .setFooter({ text: donMultiplier > 1 ? `🔥 ${donMultiplier}x Event Active!${luckBonus > 0 ? ` | 🍀 +${luckBonus.toFixed(1)}% luck` : ''}` : luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Use yaga pray for luck boost!' })
             .setTimestamp();
         return message.channel.send({ embeds: [embed] });
     }
@@ -957,11 +872,8 @@ client.on('guildMemberAdd', async (member) => {
 // =============================================
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
-
     console.log(`📥 /${interaction.commandName} received from ${interaction.user.tag}`);
-
     try { await interaction.deferReply(); } catch { return; }
-
     const { commandName, guild } = interaction;
 
     try {
@@ -980,9 +892,9 @@ client.on('interactionCreate', async interaction => {
                     { name: '📅 Scheduled Messages', value: '`/schedule_msg` — Schedule a message\n`/list_schedules` — List this server schedules\n`/list_all_schedules` — List all schedules\n`/cancel_schedule` — Cancel a schedule' },
                     { name: '📌 Sticky & Announcements', value: '`/setsticky` — Set sticky message\n`/removesticky` — Remove sticky\n`/setannouncechannel` — Set announce channel\n`/announce` — Send announcement' },
                     { name: '📋 Mod Logs', value: '`/modlogs` — View moderation logs' },
-                    { name: '🎮 Games & Economy', value: '`/daily` or `yaga daily` — Claim tokens daily\n`/wallet` or `yaga wallet [@user]` — Check tokens & luck\n`/coinflip` or `yaga cf <amount> [h/t]` — Bet tokens on a coin flip\n`yaga luck <luck> <bet> [h/t]` — Spend luck to boost a flip (each luck pt = +2% win chance)\n`/transfer` or `yaga transfer <amount> @user` — Send tokens\n`/pray` or `yaga pray` — Pray for luck (every 1-2h, requires ≥1 token)\n`/leaderboard` — Top 10 richest players' },
-                    { name: '🎪 Admin Events', value: '`/tokenrain <amount> [duration]` — Drop tokens for everyone who reacts 🎉\n`/jackpot [duration]` — Players contribute tokens, random winner takes all 🎰\n`/doubleornothing [duration] [multiplier]` — All coinflips pay Nx for a limited time 💰' },
-                    { name: '⚠️ Important Note', value: '> 🎪 **Event commands are Admin only.**\n> ⏱️ Duration is in **seconds** for Token Rain & Jackpot.\n> 💰 Double or Nothing duration is in **minutes** — the Yagami-Bot sets the multiplier (2x–10x) and how long it lasts.\n> 🎰 Jackpot entries require players to use `/jackpotjoin <amount>` during the event.' }
+                    { name: '🎮 Games & Economy', value: '`/daily` or `yaga daily` — Claim tokens daily\n`/wallet` or `yaga wallet [@user]` — Check tokens & luck\n`/coinflip` or `yaga cf <amount> [h/t]` — Bet tokens on a coin flip\n`yaga luck <luck> <bet> [h/t]` — Spend luck to boost a flip\n`/transfer` or `yaga transfer <amount> @user` — Send tokens\n`/pray` or `yaga pray` — Pray for luck (every 2h, requires ≥1 token)\n`/leaderboard` — Top 10 richest players' },
+                    { name: '🎪 Admin Events', value: '`/tokenrain <amount> [duration]` — Drop tokens for everyone who reacts 🎉\n`/jackpot [duration]` — Players contribute tokens, random winner takes all 🎰\n`/doubleornothing [duration] [multiplier]` — All coinflips pay Nx for a limited time 💰\n`/jackpotjoin <amount>` — Join an active jackpot' },
+                    { name: '⚠️ Important Note', value: '> 🎪 **Event commands are Admin only.**\n> ⏱️ Duration is in **seconds** for Token Rain & Jackpot.\n> 💰 Double or Nothing duration is in **minutes**.\n> 🎰 Jackpot entries require players to use `/jackpotjoin <amount>` during the event.' }
                 )
                 .setFooter({ text: 'Admin commands require Administrator permission' })
                 .setTimestamp();
@@ -1157,19 +1069,15 @@ client.on('interactionCreate', async interaction => {
             const dateStr = interaction.options.getString('date');
             const theme = interaction.options.getString('theme') || null;
             const pingStr = interaction.options.getString('ping') || null;
-
             const scheduledTime = new Date(dateStr + '+08:00');
             if (isNaN(scheduledTime.getTime()))
-                return interaction.editReply('❌ Invalid date! Use format: `YYYY-MM-DD HH:MM` e.g. `2026-02-28 20:30`');
+                return interaction.editReply('❌ Invalid date! Use format: `YYYY-MM-DD HH:MM`');
             if (scheduledTime <= new Date())
                 return interaction.editReply('❌ Scheduled time must be in the future!');
-
             const unixTimestamp = Math.floor(scheduledTime.getTime() / 1000);
             const id = `SCH-${scheduleCounter++}`;
-
             const schedule = { id, channelId: channel.id, guildId: guild.id, guildName: guild.name, title, theme, pingStr, time: scheduledTime, unixTimestamp, createdBy: interaction.user.tag };
             await saveSchedule(schedule);
-
             const embed = new EmbedBuilder()
                 .setTitle('📅 Message Scheduled! (PHT)')
                 .setColor(0x2ECC71)
@@ -1223,7 +1131,7 @@ client.on('interactionCreate', async interaction => {
             const reason = interaction.options.getString('reason') || 'No reason provided';
             const member = await guild.members.fetch(user.id).catch(() => null);
             if (!member) return interaction.editReply('❌ Member not found!');
-            if (!member.bannable) return interaction.editReply('❌ I cannot ban this member! They may have a higher role than me.');
+            if (!member.bannable) return interaction.editReply('❌ I cannot ban this member!');
             await member.ban({ reason });
             await logModAction({ guildId: guild.id, guildName: guild.name, action: 'BAN', moderator: interaction.user, target: user, reason });
             const embed = new EmbedBuilder().setTitle('🔨 Member Banned').setColor(0xFF0000)
@@ -1242,7 +1150,7 @@ client.on('interactionCreate', async interaction => {
             const reason = interaction.options.getString('reason') || 'No reason provided';
             const member = await guild.members.fetch(user.id).catch(() => null);
             if (!member) return interaction.editReply('❌ Member not found!');
-            if (!member.kickable) return interaction.editReply('❌ I cannot kick this member! They may have a higher role than me.');
+            if (!member.kickable) return interaction.editReply('❌ I cannot kick this member!');
             await member.kick(reason);
             await logModAction({ guildId: guild.id, guildName: guild.name, action: 'KICK', moderator: interaction.user, target: user, reason });
             const embed = new EmbedBuilder().setTitle('👢 Member Kicked').setColor(0xFF8C00)
@@ -1370,25 +1278,17 @@ client.on('interactionCreate', async interaction => {
             const userId = interaction.user.id;
             const player = await getPlayer(userId, interaction.user.username);
             if (!player) return interaction.editReply('❌ Could not load your profile!');
-
             const now = new Date();
             const phtOffset = 8 * 60 * 60 * 1000;
             const phtNow = new Date(now.getTime() + phtOffset);
             const phtMidnight = new Date(Date.UTC(phtNow.getUTCFullYear(), phtNow.getUTCMonth(), phtNow.getUTCDate()) - phtOffset);
-
             if (player.last_daily && new Date(player.last_daily) >= phtMidnight) {
                 const nextMidnight = new Date(phtMidnight.getTime() + 24 * 60 * 60 * 1000);
                 const unixNext = Math.floor(nextMidnight.getTime() / 1000);
                 return interaction.editReply(`⏳ You already claimed your daily reward! Come back <t:${unixNext}:R>.`);
             }
-
             const reward = Math.floor(Math.random() * 4001) + 1000;
-            await updatePlayer(userId, {
-                tokens: player.tokens + reward,
-                last_daily: now.toISOString(),
-                username: interaction.user.username
-            });
-
+            await updatePlayer(userId, { tokens: player.tokens + reward, last_daily: now.toISOString(), username: interaction.user.username });
             const embed = new EmbedBuilder()
                 .setTitle('🎁 Daily Reward Claimed!')
                 .setColor(0xF1C40F)
@@ -1407,11 +1307,9 @@ client.on('interactionCreate', async interaction => {
             const targetUser = interaction.options.getUser('user') || interaction.user;
             const player = await getPlayer(targetUser.id, targetUser.username);
             if (!player) return interaction.editReply('❌ Could not load profile!');
-
             const winRate = (player.total_wins + player.total_losses) > 0
                 ? ((player.total_wins / (player.total_wins + player.total_losses)) * 100).toFixed(1)
                 : '0.0';
-
             const embed = new EmbedBuilder()
                 .setTitle(`👛 ${targetUser.username}'s Wallet`)
                 .setColor(0xF1C40F)
@@ -1428,21 +1326,25 @@ client.on('interactionCreate', async interaction => {
         }
 
         // /coinflip
+        // FIX #4: Now checks for active doubleornothing event
         if (commandName === 'coinflip') {
             const userId = interaction.user.id;
             const side = interaction.options.getString('side');
             const bet = interaction.options.getInteger('bet');
-
             const player = await getPlayer(userId, interaction.user.username);
             if (!player) return interaction.editReply('❌ Could not load your profile!');
             if (player.tokens < bet)
                 return interaction.editReply(`❌ You don't have enough tokens! You only have **${formatTokens(player.tokens)} 🪙**.`);
-
             const luckBonus = Math.min(player.luck_points * 0.5, 10);
             const roll = Math.random() * 100;
             const flipResult = roll < (50 + luckBonus) ? 'heads' : 'tails';
             const won = flipResult === side;
-            const newTokens = won ? player.tokens + bet : player.tokens - bet;
+
+            // FIX #4: Check for active Double or Nothing event
+            const donEvent = activeEvents.get(guild.id + '_don');
+            const donMultiplier = donEvent ? donEvent.multiplier : 1;
+            const winAmount = won ? bet * donMultiplier : bet;
+            const newTokens = won ? player.tokens + winAmount : player.tokens - bet;
             const newLuck = Math.max(0, player.luck_points - 1);
 
             await updatePlayer(userId, {
@@ -1452,20 +1354,19 @@ client.on('interactionCreate', async interaction => {
                 total_losses: won ? player.total_losses : player.total_losses + 1,
                 username: interaction.user.username
             });
-
             const embed = new EmbedBuilder()
-                .setTitle(won ? '🎉 You Won!' : '💀 You Lost!')
+                .setTitle(won ? `🎉 You Won${donMultiplier > 1 ? ` (${donMultiplier}x EVENT!)` : ''}!` : '💀 You Lost!')
                 .setColor(won ? 0x2ECC71 : 0xFF0000)
                 .setDescription(
                     `The coin landed on **${flipResult === 'heads' ? '🔵 Heads' : '🔴 Tails'}**!\n` +
                     `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**`
                 )
                 .addFields(
-                    { name: won ? '💰 Winnings' : '💸 Lost', value: `${bet} 🪙 tokens`, inline: true },
-                    { name: '🏦 Balance', value: `${newTokens} 🪙`, inline: true },
+                    { name: won ? '💰 Winnings' : '💸 Lost', value: `${formatTokens(won ? winAmount : bet)} 🪙 tokens`, inline: true },
+                    { name: '🏦 Balance', value: `${formatTokens(newTokens)} 🪙`, inline: true },
                     { name: '🍀 Luck Points', value: `${newLuck}`, inline: true }
                 )
-                .setFooter({ text: luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Pray for luck to boost your odds!' })
+                .setFooter({ text: donMultiplier > 1 ? `🔥 ${donMultiplier}x Event Active!${luckBonus > 0 ? ` | 🍀 +${luckBonus.toFixed(1)}% luck` : ''}` : luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Pray for luck to boost your odds!' })
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
         }
@@ -1475,21 +1376,16 @@ client.on('interactionCreate', async interaction => {
             const userId = interaction.user.id;
             const targetUser = interaction.options.getUser('user');
             const amount = interaction.options.getInteger('amount');
-
             if (targetUser.id === userId) return interaction.editReply('❌ You cannot transfer tokens to yourself!');
             if (targetUser.bot) return interaction.editReply('❌ You cannot transfer tokens to a bot!');
-
             const sender = await getPlayer(userId, interaction.user.username);
             if (!sender) return interaction.editReply('❌ Could not load your profile!');
             if (sender.tokens < amount)
                 return interaction.editReply(`❌ Not enough tokens! You only have **${formatTokens(sender.tokens)} 🪙**.`);
-
             const receiver = await getPlayer(targetUser.id, targetUser.username);
             if (!receiver) return interaction.editReply('❌ Could not load target profile!');
-
             await updatePlayer(userId, { tokens: sender.tokens - amount });
             await updatePlayer(targetUser.id, { tokens: receiver.tokens + amount, username: targetUser.username });
-
             const embed = new EmbedBuilder()
                 .setTitle('💸 Token Transfer Complete!')
                 .setColor(0x3498DB)
@@ -1504,27 +1400,22 @@ client.on('interactionCreate', async interaction => {
         }
 
         // /pray
+        // FIX #3: Fixed 2-hour cooldown — no longer randomized on every check
         if (commandName === 'pray') {
             const userId = interaction.user.id;
             const player = await getPlayer(userId, interaction.user.username);
             if (!player) return interaction.editReply('❌ Could not load your profile!');
-
-            // Anti-abuse: must have at least 1 token to pray
             if (player.tokens <= 0)
                 return interaction.editReply('❌ You need at least **1 token** to pray! Use `/daily` to earn tokens first. 🙏');
-
             const now = new Date();
-            const cooldownMs = (Math.random() < 0.5 ? 1 : 2) * 60 * 60 * 1000;
-
-            if (player.last_pray && (now - new Date(player.last_pray)) < cooldownMs) {
-                const nextPray = Math.floor((new Date(player.last_pray).getTime() + cooldownMs) / 1000);
+            const PRAY_COOLDOWN_MS = 2 * 60 * 60 * 1000; // Fixed 2 hours
+            if (player.last_pray && (now - new Date(player.last_pray)) < PRAY_COOLDOWN_MS) {
+                const nextPray = Math.floor((new Date(player.last_pray).getTime() + PRAY_COOLDOWN_MS) / 1000);
                 return interaction.editReply(`🙏 The gods need time to listen... Pray again <t:${nextPray}:R>.`);
             }
-
             const luckGained = Math.floor(Math.random() * 10) + 1;
             const newLuck = player.luck_points + luckGained;
             await updatePlayer(userId, { luck_points: newLuck, last_pray: now.toISOString() });
-
             let feelMsg;
             if (luckGained <= 2) feelMsg = 'You feel a little lucky...';
             else if (luckGained <= 4) feelMsg = 'You feel slightly lucky.';
@@ -1532,12 +1423,11 @@ client.on('interactionCreate', async interaction => {
             else if (luckGained <= 8) feelMsg = 'You feel very lucky!';
             else if (luckGained === 9) feelMsg = 'You feel extremely lucky!!';
             else feelMsg = 'You feel INCREDIBLY lucky!!!';
-
             const embed = new EmbedBuilder()
                 .setTitle('🙏 Prayer')
                 .setColor(0x9B59B6)
                 .setDescription(`${interaction.user} prays... ${feelMsg}\nYou gained **+${luckGained} luck points**!\nYou now have **${newLuck} luck point(s)**!`)
-                .setFooter({ text: 'Pray again in 1–2 hours!' })
+                .setFooter({ text: 'Pray again in 2 hours!' })
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
         }
@@ -1546,42 +1436,34 @@ client.on('interactionCreate', async interaction => {
         if (commandName === 'tokenrain') {
             const amount = interaction.options.getInteger('amount');
             const duration = interaction.options.getInteger('duration') || 30;
-
             if (activeEvents.get(guild.id + '_tokenrain'))
                 return interaction.editReply('❌ A Token Rain is already active!');
-
             activeEvents.set(guild.id + '_tokenrain', true);
-
             const embed = new EmbedBuilder()
                 .setTitle('🎉 TOKEN RAIN!')
                 .setColor(0xF1C40F)
                 .setDescription(`**${formatTokens(amount)} 🪙 tokens** are raining down!\n\nReact with 🎁 to collect your share!\n\n⏱️ You have **${duration} seconds**!`)
                 .setFooter({ text: `Started by ${interaction.user.tag}` })
                 .setTimestamp();
-
             const rainMsg = await interaction.channel.send({ embeds: [embed] });
             await rainMsg.react('🎁');
             await interaction.editReply(`✅ Token Rain started! Dropping **${formatTokens(amount)}** tokens for ${duration}s.`);
-
             setTimeout(async () => {
                 try {
                     const fetched = await rainMsg.fetch();
                     const reactors = await fetched.reactions.cache.get('🎁')?.users.fetch();
                     const collectors = reactors ? [...reactors.values()].filter(u => !u.bot) : [];
-
                     if (collectors.length === 0) {
                         activeEvents.delete(guild.id + '_tokenrain');
                         const noOneEmbed = new EmbedBuilder().setTitle('🎉 Token Rain Ended').setColor(0xFF0000)
                             .setDescription('Nobody collected the tokens! The rain went to waste. 😢').setTimestamp();
                         return rainMsg.edit({ embeds: [noOneEmbed] });
                     }
-
                     const share = Math.floor(amount / collectors.length);
                     for (const user of collectors) {
                         const player = await getPlayer(user.id, user.username);
                         if (player) await updatePlayer(user.id, { tokens: player.tokens + share, username: user.username });
                     }
-
                     const winnerList = collectors.map(u => `<@${u.id}>`).join(', ');
                     const endEmbed = new EmbedBuilder()
                         .setTitle('🎉 Token Rain Ended!')
@@ -1598,41 +1480,33 @@ client.on('interactionCreate', async interaction => {
         // /jackpot
         if (commandName === 'jackpot') {
             const duration = interaction.options.getInteger('duration') || 60;
-
             if (activeEvents.get(guild.id + '_jackpot'))
-                return interaction.editReply('❌ A Jackpot is already active! Use `/jackpot join <amount>` to enter.');
-
-            const pot = { total: 0, entries: [] }; // { userId, username, amount }
+                return interaction.editReply('❌ A Jackpot is already active!');
+            const pot = { total: 0, entries: [] };
             activeEvents.set(guild.id + '_jackpot', pot);
-
             const endTime = Math.floor((Date.now() + duration * 1000) / 1000);
             const embed = new EmbedBuilder()
                 .setTitle('🎰 JACKPOT STARTED!')
                 .setColor(0xF1C40F)
-                .setDescription(`A Jackpot event has begun!\n\nUse \`/jackpot join <amount>\` to throw tokens into the pot.\nOne lucky winner takes **everything**!\n\n⏱️ Entries close <t:${endTime}:R>`)
+                .setDescription(`A Jackpot event has begun!\n\nUse \`/jackpotjoin <amount>\` to throw tokens into the pot.\nOne lucky winner takes **everything**!\n\n⏱️ Entries close <t:${endTime}:R>`)
                 .addFields({ name: '💰 Current Pot', value: '0 🪙' })
                 .setFooter({ text: `Started by ${interaction.user.tag}` })
                 .setTimestamp();
-
             const jackpotMsg = await interaction.channel.send({ embeds: [embed] });
             await interaction.editReply(`✅ Jackpot started! Players have ${duration}s to enter.`);
             activeEvents.set(guild.id + '_jackpot_msgid', jackpotMsg.id);
             activeEvents.set(guild.id + '_jackpot_channelid', interaction.channel.id);
-
             setTimeout(async () => {
                 try {
                     const currentPot = activeEvents.get(guild.id + '_jackpot');
                     activeEvents.delete(guild.id + '_jackpot');
                     activeEvents.delete(guild.id + '_jackpot_msgid');
                     activeEvents.delete(guild.id + '_jackpot_channelid');
-
                     if (!currentPot || currentPot.entries.length === 0) {
                         const noOneEmbed = new EmbedBuilder().setTitle('🎰 Jackpot Ended').setColor(0xFF0000)
                             .setDescription('Nobody entered the jackpot! No winner. 😢').setTimestamp();
                         return jackpotMsg.edit({ embeds: [noOneEmbed] });
                     }
-
-                    // Weighted random — more tokens = higher chance
                     const totalTickets = currentPot.entries.reduce((sum, e) => sum + e.amount, 0);
                     let rand = Math.random() * totalTickets;
                     let winner = currentPot.entries[0];
@@ -1640,10 +1514,8 @@ client.on('interactionCreate', async interaction => {
                         rand -= entry.amount;
                         if (rand <= 0) { winner = entry; break; }
                     }
-
                     const winnerPlayer = await getPlayer(winner.userId, winner.username);
                     if (winnerPlayer) await updatePlayer(winner.userId, { tokens: winnerPlayer.tokens + currentPot.total, username: winner.username });
-
                     const entryList = currentPot.entries.map(e => `<@${e.userId}> — ${formatTokens(e.amount)} 🪙`).join('\n');
                     const endEmbed = new EmbedBuilder()
                         .setTitle('🎰 JACKPOT WINNER!')
@@ -1657,16 +1529,14 @@ client.on('interactionCreate', async interaction => {
             }, duration * 1000);
         }
 
-        // /jackpot join — players use this to enter
+        // /jackpotjoin
         if (commandName === 'jackpotjoin') {
             const amount = interaction.options.getInteger('amount');
             const pot = activeEvents.get(guild.id + '_jackpot');
             if (!pot) return interaction.editReply('❌ No Jackpot is active right now!');
-
             const player = await getPlayer(interaction.user.id, interaction.user.username);
             if (!player) return interaction.editReply('❌ Could not load your profile!');
             if (player.tokens < amount) return interaction.editReply(`❌ Not enough tokens! You have **${formatTokens(player.tokens)} 🪙**.`);
-
             const existing = pot.entries.find(e => e.userId === interaction.user.id);
             if (existing) {
                 existing.amount += amount;
@@ -1675,8 +1545,6 @@ client.on('interactionCreate', async interaction => {
             }
             pot.total += amount;
             await updatePlayer(interaction.user.id, { tokens: player.tokens - amount });
-
-            // Update jackpot message pot display
             try {
                 const channelId = activeEvents.get(guild.id + '_jackpot_channelid');
                 const msgId = activeEvents.get(guild.id + '_jackpot_msgid');
@@ -1690,7 +1558,6 @@ client.on('interactionCreate', async interaction => {
                     }
                 }
             } catch {}
-
             return interaction.editReply({ content: `✅ You entered **${formatTokens(amount)} 🪙** into the jackpot! Good luck! 🎰`, ephemeral: true });
         }
 
@@ -1698,23 +1565,18 @@ client.on('interactionCreate', async interaction => {
         if (commandName === 'doubleornothing') {
             const duration = interaction.options.getInteger('duration') || 5;
             const multiplier = interaction.options.getInteger('multiplier') || 2;
-
             if (activeEvents.get(guild.id + '_don'))
                 return interaction.editReply('❌ A Double or Nothing event is already active!');
-
             activeEvents.set(guild.id + '_don', { multiplier });
             const endTime = Math.floor((Date.now() + duration * 60 * 1000) / 1000);
-
             const embed = new EmbedBuilder()
                 .setTitle(`💰 ${multiplier}X OR NOTHING EVENT!`)
                 .setColor(0xFF6B00)
                 .setDescription(`All coinflips now pay **${multiplier}x** for the next **${duration} minute(s)**!\n\nUse \`yaga cf\` or \`/coinflip\` to play!\n\n⏱️ Event ends <t:${endTime}:R>`)
                 .setFooter({ text: `Started by ${interaction.user.tag}` })
                 .setTimestamp();
-
             await interaction.channel.send({ embeds: [embed] });
             await interaction.editReply(`✅ ${multiplier}x event started for ${duration} minute(s)!`);
-
             setTimeout(async () => {
                 activeEvents.delete(guild.id + '_don');
                 const endEmbed = new EmbedBuilder()
@@ -1760,13 +1622,10 @@ client.on('interactionCreate', async interaction => {
             const message = interaction.options.getString('message');
             const pingStr = interaction.options.getString('ping') || null;
             const title = interaction.options.getString('title') || '📣 Announcement';
-
             const config = await getAnnouncementChannel(guild.id);
             if (!config) return interaction.editReply('❌ No announcement channel set! Use `/setannouncechannel` first.');
-
             const channel = guild.channels.cache.get(config.channel_id);
-            if (!channel) return interaction.editReply('❌ Announcement channel not found! Please set it again.');
-
+            if (!channel) return interaction.editReply('❌ Announcement channel not found!');
             let pingText = '';
             if (pingStr) {
                 const parts = pingStr.split(',').map(r => r.trim());
@@ -1779,12 +1638,10 @@ client.on('interactionCreate', async interaction => {
                     }
                 }
             }
-
             const embed = new EmbedBuilder().setTitle(title).setColor(0x3498DB)
                 .setDescription(message)
                 .addFields({ name: '📢 By', value: `${interaction.user}` })
                 .setTimestamp();
-
             await channel.send({ content: pingText.trim() || null, embeds: [embed] });
             return interaction.editReply(`✅ Announcement sent to ${channel}!`);
         }
@@ -1794,13 +1651,11 @@ client.on('interactionCreate', async interaction => {
             const targetUser = interaction.options.getUser('user') || null;
             const logs = await getModLogs(guild.id, targetUser?.id);
             if (logs.length === 0) return interaction.editReply('📭 No moderation logs found.');
-
             const actionEmoji = { BAN: '🔨', KICK: '👢', MUTE: '🔇', TIMEOUT: '⏱️', UNMUTE: '🔊', UNTIMEOUT: '✅' };
             const embed = new EmbedBuilder()
                 .setTitle(targetUser ? `📋 Mod Logs — ${targetUser.tag}` : `📋 Mod Logs — ${guild.name}`)
                 .setColor(0xFF8C00)
                 .setTimestamp();
-
             for (const log of logs.slice(0, 10)) {
                 const emoji = actionEmoji[log.action] || '⚠️';
                 const date = Math.floor(new Date(log.created_at).getTime() / 1000);
@@ -1816,13 +1671,11 @@ client.on('interactionCreate', async interaction => {
         if (commandName === 'leaderboard') {
             const top = await getLeaderboard();
             if (top.length === 0) return interaction.editReply('📭 No players found yet!');
-
             const medals = ['🥇', '🥈', '🥉'];
             const desc = top.map((p, i) => {
                 const medal = medals[i] || `**#${i + 1}**`;
                 return `${medal} **${p.username}** — ${formatTokens(p.tokens)} 🪙 tokens | 🍀 ${p.luck_points} luck`;
             }).join('\n');
-
             const embed = new EmbedBuilder()
                 .setTitle('🏆 Token Leaderboard')
                 .setColor(0xF1C40F)
@@ -1844,7 +1697,6 @@ client.on('interactionCreate', async interaction => {
 async function runSchedulePoller() {
     const rows = await loadSchedules();
     const now = new Date();
-
     for (const s of rows) {
         const scheduledTime = new Date(s.scheduled_time);
         if (scheduledTime <= now) {
@@ -1853,7 +1705,6 @@ async function runSchedulePoller() {
                 if (!guild) { await deleteSchedule(s.id); continue; }
                 const channel = guild.channels.cache.get(s.channel_id);
                 if (!channel) { await deleteSchedule(s.id); continue; }
-
                 let pingText = '';
                 if (s.ping_str) {
                     const pingParts = s.ping_str.split(',').map(r => r.trim());
@@ -1866,7 +1717,6 @@ async function runSchedulePoller() {
                         }
                     }
                 }
-
                 const embed = new EmbedBuilder()
                     .setColor(0x2C2F33)
                     .setDescription(
@@ -1874,7 +1724,6 @@ async function runSchedulePoller() {
                         `**<t:${s.unix_timestamp}:F> CALL TIME**` +
                         (s.theme ? `\n\n**${s.theme}**` : '')
                     );
-
                 await channel.send({ content: pingText.trim() || null, embeds: [embed] });
                 console.log(`[SCHEDULE] ✅ Sent: ${s.id} - ${s.title}`);
                 await deleteSchedule(s.id);
@@ -1898,6 +1747,8 @@ client.once('clientReady', async () => {
     console.log(`✅ Yagami-Bot logged in as ${client.user.tag}`);
     console.log(`✅ Serving ${client.guilds.cache.size} servers`);
     await registerCommands();
+    // FIX #5: Initialize schedule counter from DB to prevent duplicate IDs
+    await initScheduleCounter();
     client.user.setActivity('🪙 Coin Flip | /help', { type: 3 });
     setInterval(runSchedulePoller, 30000);
     console.log('✅ Schedule poller started!');
