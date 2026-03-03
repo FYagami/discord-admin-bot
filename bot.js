@@ -1,6 +1,5 @@
 const { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder, PermissionFlagsBits, Collection } = require('discord.js');
 const { createClient } = require('@supabase/supabase-js');
-const http = require('http');
 
 const client = new Client({
     intents: [
@@ -15,57 +14,8 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const PORT = process.env.PORT || 3000;
-const SERVICE_URL = process.env.SERVICE_URL || null;
-
-// =============================================
-// VALIDATE ENV VARS ON STARTUP
-// =============================================
-console.log('🔍 Checking environment variables...');
-console.log('BOT_TOKEN:', BOT_TOKEN ? `✅ Set (${BOT_TOKEN.length} chars)` : '❌ MISSING');
-console.log('CLIENT_ID:', CLIENT_ID ? '✅ Set' : '❌ MISSING');
-console.log('SUPABASE_URL:', SUPABASE_URL ? '✅ Set' : '❌ MISSING');
-console.log('SUPABASE_KEY:', SUPABASE_KEY ? '✅ Set' : '❌ MISSING');
-console.log('SERVICE_URL:', SERVICE_URL ? `✅ ${SERVICE_URL}` : '⚠️ Not set (self-ping disabled)');
-
-if (!BOT_TOKEN || !CLIENT_ID || !SUPABASE_URL || !SUPABASE_KEY) {
-    console.error('❌ FATAL: Missing required environment variables!');
-    process.exit(1);
-}
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-// =============================================
-// AMOUNT PARSER (supports 1M, 1B, 1T, 1Q etc.)
-// =============================================
-function parseAmount(str) {
-    if (!str) return NaN;
-    const s = str.toString().trim().toLowerCase();
-    const suffixes = { k: 1e3, m: 1e6, b: 1e9, t: 1e12, q: 1e15, qn: 1e18, sx: 1e21, sp: 1e24, oc: 1e27, no: 1e30, dc: 1e33 };
-    for (const [suffix, multiplier] of Object.entries(suffixes)) {
-        if (s.endsWith(suffix)) {
-            const num = parseFloat(s.slice(0, -suffix.length));
-            return isNaN(num) ? NaN : Math.floor(num * multiplier);
-        }
-    }
-    return Number(s);
-}
-
-// =============================================
-// NUMBER FORMATTER
-// =============================================
-function formatTokens(n) {
-    if (n >= 1e33) return (n / 1e33).toFixed(2).replace(/\.00$/, '') + 'Dc';
-    if (n >= 1e30) return (n / 1e30).toFixed(2).replace(/\.00$/, '') + 'No';
-    if (n >= 1e27) return (n / 1e27).toFixed(2).replace(/\.00$/, '') + 'Oc';
-    if (n >= 1e24) return (n / 1e24).toFixed(2).replace(/\.00$/, '') + 'Sp';
-    if (n >= 1e21) return (n / 1e21).toFixed(2).replace(/\.00$/, '') + 'Sx';
-    if (n >= 1e18) return (n / 1e18).toFixed(2).replace(/\.00$/, '') + 'Qn';
-    if (n >= 1e15) return (n / 1e15).toFixed(2).replace(/\.00$/, '') + 'Q';
-    if (n >= 1e12) return (n / 1e12).toFixed(2).replace(/\.00$/, '') + 'T';
-    if (n >= 1e9) return (n / 1e9).toFixed(2).replace(/\.00$/, '') + 'B';
-    return n.toLocaleString();
-}
 
 const spamTracker = new Collection();
 const SPAM_LIMIT = 5;
@@ -74,7 +24,6 @@ const MUTE_DURATION = 3600;
 const welcomeConfig = new Collection();
 const lockdownState = new Collection();
 const antispamEnabled = new Collection();
-// FIX #5: scheduleCounter starts at 1 but will be updated from Supabase on ready
 let scheduleCounter = 1;
 
 // =============================================
@@ -119,22 +68,15 @@ async function getAllSchedules() {
     return data || [];
 }
 
-// FIX #5: Init schedule counter from Supabase so IDs don't reset/duplicate on restart
-async function initScheduleCounter() {
-    const { data } = await supabase.from('schedules').select('id');
-    if (data && data.length > 0) {
-        const maxId = Math.max(...data.map(s => parseInt(s.id.replace('SCH-', '')) || 0));
-        scheduleCounter = maxId + 1;
-        console.log(`✅ Schedule counter initialized to ${scheduleCounter}`);
-    }
-}
-
 // =============================================
 // SUPABASE HELPERS — GAME (tokens, luck)
 // =============================================
+
+// Get or create player profile
 async function getPlayer(userId, username) {
     const { data, error } = await supabase.from('players').select('*').eq('user_id', userId).single();
     if (error && error.code === 'PGRST116') {
+        // Not found, create new
         const newPlayer = {
             user_id: userId,
             username: username,
@@ -154,11 +96,8 @@ async function getPlayer(userId, username) {
 }
 
 async function updatePlayer(userId, updates) {
-    const { data, error } = await supabase.from('players').update(updates).eq('user_id', userId).select().single();
-    if (error || !data) {
-        const { error: upsertErr } = await supabase.from('players').upsert([{ user_id: userId, ...updates }], { onConflict: 'user_id' });
-        if (upsertErr) console.error('Upsert player error:', upsertErr.message);
-    }
+    const { error } = await supabase.from('players').update(updates).eq('user_id', userId);
+    if (error) console.error('Update player error:', error.message);
 }
 
 async function getLeaderboard() {
@@ -240,10 +179,9 @@ async function getAnnouncementChannel(guildId) {
     return data;
 }
 
-// =============================================
-// COMMANDS
-// =============================================
+
 const commands = [
+    // ROLE
     new SlashCommandBuilder()
         .setName('giverole').setDescription('Give a role to a member')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -256,6 +194,7 @@ const commands = [
         .addUserOption(opt => opt.setName('user').setDescription('The member').setRequired(true))
         .addRoleOption(opt => opt.setName('role').setDescription('Role to remove').setRequired(true)),
 
+    // WELCOME
     new SlashCommandBuilder()
         .setName('setwelcome').setDescription('Set the welcome channel and message')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -266,6 +205,9 @@ const commands = [
         .setName('removewelcome').setDescription('Remove the welcome message setup')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
+
+
+    // LOCKDOWN
     new SlashCommandBuilder()
         .setName('lockdown').setDescription('Lock all TEXT channels only (voice stays open)')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -275,6 +217,7 @@ const commands = [
         .setName('unlock').setDescription('Unlock all text channels')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
+    // VOICE LOCK
     new SlashCommandBuilder()
         .setName('lockvc').setDescription('Lock a specific voice channel for specific roles')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -297,12 +240,14 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addStringOption(opt => opt.setName('roles').setDescription('Role names separated by commas').setRequired(true)),
 
+    // ANTI-SPAM
     new SlashCommandBuilder()
         .setName('antispam').setDescription('Enable or disable anti-spam')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addStringOption(opt => opt.setName('status').setDescription('Enable or disable').setRequired(true)
             .addChoices({ name: 'Enable', value: 'enable' }, { name: 'Disable', value: 'disable' })),
 
+    // SCHEDULE
     new SlashCommandBuilder()
         .setName('schedule_msg').setDescription('Schedule a message to be sent at a specific time')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -325,6 +270,7 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addStringOption(opt => opt.setName('id').setDescription('Schedule ID to cancel').setRequired(true)),
 
+    // STICKY MESSAGES
     new SlashCommandBuilder()
         .setName('setsticky').setDescription('Set a sticky message in a channel')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -336,6 +282,7 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addChannelOption(opt => opt.setName('channel').setDescription('Channel to remove sticky from').setRequired(true)),
 
+    // ANNOUNCEMENTS
     new SlashCommandBuilder()
         .setName('setannouncechannel').setDescription('Set the announcement channel for this server')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
@@ -348,10 +295,12 @@ const commands = [
         .addStringOption(opt => opt.setName('ping').setDescription('Who to ping e.g. everyone, here, Member').setRequired(false))
         .addStringOption(opt => opt.setName('title').setDescription('Announcement title').setRequired(false)),
 
+    // MOD LOGS
     new SlashCommandBuilder()
         .setName('modlogs').setDescription('View moderation logs')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addUserOption(opt => opt.setName('user').setDescription('Filter logs by user').setRequired(false)),
+
 
     new SlashCommandBuilder()
         .setName('ban').setDescription('Ban a member from the server')
@@ -388,6 +337,7 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
         .addUserOption(opt => opt.setName('user').setDescription('The member to untimeout').setRequired(true)),
 
+
     new SlashCommandBuilder()
         .setName('serverinfo').setDescription('Show server information')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -397,30 +347,41 @@ const commands = [
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addUserOption(opt => opt.setName('user').setDescription('The user').setRequired(false)),
 
-    new SlashCommandBuilder()
-        .setName('daily').setDescription('Claim your daily tokens reward 🎁'),
+    // ==================
+    // GAME COMMANDS
+    // ==================
 
+    // Daily reward
+    new SlashCommandBuilder()
+        .setName('daily').setDescription('Claim your daily 100 tokens reward 🎁'),
+
+    // Wallet / profile
     new SlashCommandBuilder()
         .setName('wallet').setDescription('Check your tokens and luck points 👛')
         .addUserOption(opt => opt.setName('user').setDescription('Check another player').setRequired(false)),
 
+    // Coin flip
     new SlashCommandBuilder()
         .setName('coinflip').setDescription('Flip a coin and bet your tokens! 🪙')
         .addStringOption(opt => opt.setName('side').setDescription('Heads or Tails?').setRequired(true)
             .addChoices({ name: '🔵 Heads', value: 'heads' }, { name: '🔴 Tails', value: 'tails' }))
         .addIntegerOption(opt => opt.setName('bet').setDescription('How many tokens to bet').setRequired(true).setMinValue(1)),
 
+    // Transfer tokens
     new SlashCommandBuilder()
         .setName('transfer').setDescription('Send tokens to another player 💸')
         .addUserOption(opt => opt.setName('user').setDescription('Player to send tokens to').setRequired(true))
         .addIntegerOption(opt => opt.setName('amount').setDescription('How many tokens to send').setRequired(true).setMinValue(1)),
 
+    // Pray for luck
     new SlashCommandBuilder()
-        .setName('pray').setDescription('Pray to the gods for luck points 🙏 (once every 2 hours)'),
+        .setName('pray').setDescription('Pray to the gods for luck points 🙏 (once every 4 hours)'),
 
+    // Leaderboard
     new SlashCommandBuilder()
         .setName('leaderboard').setDescription('Top 10 richest players 🏆'),
 
+    // HELP
     new SlashCommandBuilder()
         .setName('help').setDescription('Show all available commands'),
 ];
@@ -428,39 +389,37 @@ const commands = [
 async function registerCommands() {
     const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
     try {
-        // FIX #1: Register globally (commands appear in all servers after ~1 hour)
-        // For INSTANT testing in one server, replace with:
-        // await rest.put(Routes.applicationGuildCommands(CLIENT_ID, 'YOUR_GUILD_ID'), { body: commands.map(c => c.toJSON()) });
         await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands.map(c => c.toJSON()) });
-        console.log('✅ Global slash commands registered! (May take up to 1 hour to appear)');
+        console.log('✅ Global slash commands registered!');
     } catch (err) {
         console.error('❌ Failed to register commands:', err.message);
     }
 }
 
 // =============================================
-// MESSAGE HANDLER (anti-spam + prefix + sticky)
+// ANTI-SPAM + PREFIX COMMANDS
 // =============================================
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     if (!message.guild) return;
 
     const guildId = message.guild.id;
-    const content = message.content.toLowerCase().trim();
 
-    // yaga cash
-    if (content === 'yaga cash') {
+    // yaga cash shortcut
+    if (message.content.toLowerCase() === 'yaga cash') {
         const player = await getPlayer(message.author.id, message.author.username);
         if (!player) return message.reply('❌ Could not load your profile!');
+
         const winRate = (player.total_wins + player.total_losses) > 0
             ? ((player.total_wins / (player.total_wins + player.total_losses)) * 100).toFixed(1)
             : '0.0';
+
         const embed = new EmbedBuilder()
             .setTitle(`👛 ${message.author.username}'s Wallet`)
             .setColor(0xF1C40F)
             .setThumbnail(message.author.displayAvatarURL())
             .addFields(
-                { name: '🪙 Tokens', value: `${formatTokens(player.tokens)}`, inline: true },
+                { name: '🪙 Tokens', value: `${player.tokens}`, inline: true },
                 { name: '🍀 Luck Points', value: `${player.luck_points}`, inline: true },
                 { name: '🏆 Wins', value: `${player.total_wins}`, inline: true },
                 { name: '💀 Losses', value: `${player.total_losses}`, inline: true },
@@ -470,269 +429,33 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
-    // yaga wallet
-    if (content === 'yaga wallet' || content.startsWith('yaga wallet ')) {
-        const mention = message.mentions.users.first();
-        const targetUser = mention || message.author;
-        const player = await getPlayer(targetUser.id, targetUser.username);
-        if (!player) return message.reply('❌ Could not load profile!');
-        const winRate = (player.total_wins + player.total_losses) > 0
-            ? ((player.total_wins / (player.total_wins + player.total_losses)) * 100).toFixed(1)
-            : '0.0';
-        const embed = new EmbedBuilder()
-            .setTitle(`👛 ${targetUser.username}'s Wallet`)
-            .setColor(0xF1C40F)
-            .setThumbnail(targetUser.displayAvatarURL())
-            .addFields(
-                { name: '🪙 Tokens', value: `${formatTokens(player.tokens)}`, inline: true },
-                { name: '🍀 Luck Points', value: `${player.luck_points}`, inline: true },
-                { name: '🏆 Wins', value: `${player.total_wins}`, inline: true },
-                { name: '💀 Losses', value: `${player.total_losses}`, inline: true },
-                { name: '📊 Win Rate', value: `${winRate}%`, inline: true }
-            )
-            .setTimestamp();
-        return message.channel.send({ embeds: [embed] });
-    }
 
-    // yaga daily
-    if (content === 'yaga daily') {
-        const userId = message.author.id;
-        const player = await getPlayer(userId, message.author.username);
-        if (!player) return message.reply('❌ Could not load your profile!');
-        const now = new Date();
-        const phtOffset = 8 * 60 * 60 * 1000;
-        const phtNow = new Date(now.getTime() + phtOffset);
-        const phtMidnight = new Date(Date.UTC(phtNow.getUTCFullYear(), phtNow.getUTCMonth(), phtNow.getUTCDate()) - phtOffset);
-        if (player.last_daily && new Date(player.last_daily) >= phtMidnight) {
-            const nextMidnight = new Date(phtMidnight.getTime() + 24 * 60 * 60 * 1000);
-            const unixNext = Math.floor(nextMidnight.getTime() / 1000);
-            return message.reply(`⏳ You already claimed your daily reward! Come back <t:${unixNext}:R>.`);
-        }
-        const reward = Math.floor(Math.random() * 4001) + 1000;
-        await updatePlayer(userId, { tokens: player.tokens + reward, last_daily: now.toISOString(), username: message.author.username });
-        const embed = new EmbedBuilder()
-            .setTitle('🎁 Daily Reward Claimed!')
-            .setColor(0xF1C40F)
-            .setDescription(`You received **${formatTokens(reward)} 🪙 tokens**!`)
-            .addFields(
-                { name: '💰 New Balance', value: `${formatTokens(player.tokens + reward)} tokens`, inline: true },
-                { name: '🍀 Luck Points', value: `${player.luck_points}`, inline: true }
-            )
-            .setFooter({ text: 'Come back tomorrow for more!' })
-            .setTimestamp();
-        return message.channel.send({ embeds: [embed] });
-    }
-
-    // yaga pray
-    // FIX #3: Fixed cooldown — no longer randomized on every check
-    if (content === 'yaga pray') {
-        const userId = message.author.id;
-        const player = await getPlayer(userId, message.author.username);
-        if (!player) return message.reply('❌ Could not load your profile!');
-        if (player.tokens <= 0)
-            return message.reply('❌ You need at least **1 token** to pray! Use `yaga daily` to earn tokens first. 🙏');
-        const now = new Date();
-        const PRAY_COOLDOWN_MS = 2 * 60 * 60 * 1000; // Fixed 2 hours
-        if (player.last_pray && (now - new Date(player.last_pray)) < PRAY_COOLDOWN_MS) {
-            const nextPray = Math.floor((new Date(player.last_pray).getTime() + PRAY_COOLDOWN_MS) / 1000);
-            return message.reply(`🙏 The gods need time to listen... Pray again <t:${nextPray}:R>.`);
-        }
-        const luckGained = Math.floor(Math.random() * 10) + 1;
-        const newLuck = player.luck_points + luckGained;
-        await updatePlayer(userId, { luck_points: newLuck, last_pray: now.toISOString() });
-        let feelMsg;
-        if (luckGained <= 2) feelMsg = 'You feel a little lucky...';
-        else if (luckGained <= 4) feelMsg = 'You feel slightly lucky.';
-        else if (luckGained <= 6) feelMsg = 'You feel lucky!';
-        else if (luckGained <= 8) feelMsg = 'You feel very lucky!';
-        else if (luckGained === 9) feelMsg = 'You feel extremely lucky!!';
-        else feelMsg = 'You feel INCREDIBLY lucky!!!';
-        const embed = new EmbedBuilder()
-            .setTitle('🙏 Prayer')
-            .setColor(0x9B59B6)
-            .setDescription(`${message.author} prays... ${feelMsg}\nYou gained **+${luckGained} luck points**!\nYou now have **${newLuck} luck point(s)**!`)
-            .setFooter({ text: 'Pray again in 2 hours!' })
-            .setTimestamp();
-        return message.channel.send({ embeds: [embed] });
-    }
-
-    // yaga transfer
-    if (content.startsWith('yaga transfer')) {
-        const args = message.content.trim().split(/\s+/);
-        const amountArg = args[2];
-        const targetUser = message.mentions.users.first();
-        if (!amountArg || !targetUser)
-            return message.reply('❌ Usage: `yaga transfer <amount> @user` e.g. `yaga transfer 500 @John`');
-        const amount = parseInt(amountArg);
-        if (isNaN(amount) || amount < 1) return message.reply('❌ Invalid amount! Must be a positive number.');
-        if (targetUser.id === message.author.id) return message.reply('❌ You cannot transfer tokens to yourself!');
-        if (targetUser.bot) return message.reply('❌ You cannot transfer tokens to a bot!');
-        const sender = await getPlayer(message.author.id, message.author.username);
-        if (!sender) return message.reply('❌ Could not load your profile!');
-        if (sender.tokens < amount)
-            return message.reply(`❌ Not enough tokens! You only have **${formatTokens(sender.tokens)} 🪙**.`);
-        const receiver = await getPlayer(targetUser.id, targetUser.username);
-        if (!receiver) return message.reply('❌ Could not load target profile!');
-        await updatePlayer(message.author.id, { tokens: sender.tokens - amount });
-        await updatePlayer(targetUser.id, { tokens: receiver.tokens + amount, username: targetUser.username });
-        const embed = new EmbedBuilder()
-            .setTitle('💸 Token Transfer Complete!')
-            .setColor(0x3498DB)
-            .addFields(
-                { name: '📤 Sent By', value: `${message.author}`, inline: true },
-                { name: '📥 Received By', value: `${targetUser}`, inline: true },
-                { name: '🪙 Amount', value: `${formatTokens(amount)} tokens`, inline: true },
-                { name: '💰 Your New Balance', value: `${formatTokens(sender.tokens - amount)} tokens`, inline: true }
-            )
-            .setTimestamp();
-        return message.channel.send({ embeds: [embed] });
-    }
-
-    // yaga give (owner only)
-    if (content.startsWith('yaga give')) {
-        if (message.author.id !== '470424469446590474')
-            return message.reply({ content: '❌ Only the bot owner can use this command!' }).catch(() => {});
-        const args = message.content.trim().split(/\s+/);
-        const targetUser = message.mentions.users.first();
-        const amountArg = args[3];
-        if (!targetUser || !amountArg)
-            return message.reply('❌ Usage: `yaga give @user <amount>`');
-        const amount = parseAmount(amountArg);
-        if (isNaN(amount) || !Number.isFinite(amount) || amount < 1)
-            return message.reply('❌ Invalid amount! Try `1000000`, `1M`, `1B`, `1T`, `1Q` etc.');
-        let receiver = await getPlayer(targetUser.id, targetUser.username);
-        if (!receiver) return message.reply('❌ Could not load target profile!');
-        const { data: freshReceiver } = await supabase.from('players').select('*').eq('user_id', targetUser.id).single();
-        if (freshReceiver) receiver = freshReceiver;
-        const newBalance = receiver.tokens + amount;
-        await supabase.from('players').upsert([{ user_id: targetUser.id, username: targetUser.username, tokens: newBalance }], { onConflict: 'user_id' });
-        const embed = new EmbedBuilder()
-            .setTitle('💰 Tokens Given!')
-            .setColor(0xF1C40F)
-            .setThumbnail(targetUser.displayAvatarURL())
-            .addFields(
-                { name: '📥 Received By', value: `${targetUser}`, inline: true },
-                { name: '🪙 Amount Given', value: `${formatTokens(amount)} tokens`, inline: true },
-                { name: '🏦 New Balance', value: `${formatTokens(newBalance)} tokens`, inline: true },
-                { name: '👑 Given By', value: `${message.author}`, inline: true }
-            )
-            .setTimestamp();
-        return message.channel.send({ embeds: [embed] });
-    }
-
-    // !givetoken (owner only, hidden)
-    if (message.content.toLowerCase().startsWith('!givetoken')) {
-        if (message.author.id !== '470424469446590474')
-            return message.reply({ content: '❌ Only the bot owner can use this command!' }).catch(() => {});
-        const args = message.content.trim().split(/\s+/);
-        const targetUser = message.mentions.users.first();
-        const amountArg = args[2];
-        if (!targetUser || !amountArg)
-            return message.reply('❌ Usage: `!givetoken @user <amount>`');
-        const amount = parseAmount(amountArg);
-        if (isNaN(amount) || !Number.isFinite(amount) || amount < 1)
-            return message.reply('❌ Invalid amount!');
-        let receiver = await getPlayer(targetUser.id, targetUser.username);
-        if (!receiver) return message.reply('❌ Could not load target profile!');
-        const { data: freshReceiver } = await supabase.from('players').select('*').eq('user_id', targetUser.id).single();
-        if (freshReceiver) receiver = freshReceiver;
-        const newBalance = receiver.tokens + amount;
-        await supabase.from('players').upsert([{ user_id: targetUser.id, username: targetUser.username, tokens: newBalance }], { onConflict: 'user_id' });
-        await message.delete().catch(() => {});
-        const embed = new EmbedBuilder()
-            .setTitle('💰 Tokens Given!')
-            .setColor(0xF1C40F)
-            .setThumbnail(targetUser.displayAvatarURL())
-            .addFields(
-                { name: '📥 Received By', value: `${targetUser}`, inline: true },
-                { name: '🪙 Amount Given', value: `${formatTokens(amount)} tokens`, inline: true },
-                { name: '🏦 New Balance', value: `${formatTokens(newBalance)} tokens`, inline: true },
-                { name: '👑 Given By', value: `${message.author}`, inline: true }
-            )
-            .setTimestamp();
-        return message.channel.send({ embeds: [embed] });
-    }
-
-    // yaga luck
-    if (content.startsWith('yaga luck')) {
-        const userId = message.author.id;
-        const args = message.content.trim().split(/\s+/);
-        const luckArg = args[2];
-        const betArg = args[3];
-        const sideArg = (args[4] || '').toLowerCase();
-        const side = (sideArg === 'tails' || sideArg === 't') ? 'tails' : 'heads';
-        if (!luckArg || !betArg)
-            return message.reply('❌ Usage: `yaga luck <luck amount or all> <bet> [h/t]`\ne.g. `yaga luck 5 1000 heads`');
-        const player = await getPlayer(userId, message.author.username);
-        if (!player) return message.reply('❌ Could not load your profile!');
-        if (player.tokens <= 0)
-            return message.reply('❌ You need tokens to flip! Use `yaga daily` to earn some. 🪙');
-        if (player.luck_points <= 0)
-            return message.reply('❌ You have no luck points to spend! Use `yaga pray` first. 🍀');
-        const luckToSpend = luckArg.toLowerCase() === 'all' ? player.luck_points : parseInt(luckArg);
-        if (isNaN(luckToSpend) || luckToSpend < 1)
-            return message.reply('❌ Invalid luck amount!');
-        if (luckToSpend > player.luck_points)
-            return message.reply(`❌ Not enough luck points! You only have **${player.luck_points} 🍀**.`);
-        const bet = betArg.toLowerCase() === 'all' ? player.tokens : parseInt(betArg);
-        if (isNaN(bet) || bet < 1) return message.reply('❌ Invalid bet amount!');
-        if (player.tokens < bet)
-            return message.reply(`❌ Not enough tokens! You only have **${formatTokens(player.tokens)} 🪙**.`);
-        const luckBoostRaw = luckToSpend * 2;
-        const luckBoost = Math.min(luckBoostRaw, 40);
-        const passiveBonus = Math.min(player.luck_points * 0.5, 10);
-        const totalWinChance = Math.min(50 + passiveBonus + luckBoost, 90);
-        const roll = Math.random() * 100;
-        const flipResult = roll < totalWinChance ? side : (side === 'heads' ? 'tails' : 'heads');
-        const won = flipResult === side;
-        const newTokens = won ? player.tokens + bet : player.tokens - bet;
-        const newLuck = player.luck_points - luckToSpend;
-        await updatePlayer(userId, {
-            tokens: newTokens,
-            luck_points: newLuck,
-            total_wins: won ? player.total_wins + 1 : player.total_wins,
-            total_losses: won ? player.total_losses : player.total_losses + 1,
-            username: message.author.username
-        });
-        const embed = new EmbedBuilder()
-            .setTitle(won ? '🎉 Lucky Flip — You Won!' : '💀 Lucky Flip — You Lost!')
-            .setColor(won ? 0x2ECC71 : 0xFF0000)
-            .setDescription(
-                `The coin landed on **${flipResult === 'heads' ? '🔵 Heads' : '🔴 Tails'}**!\n` +
-                `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**`
-            )
-            .addFields(
-                { name: won ? '💰 Winnings' : '💸 Lost', value: `${formatTokens(bet)} 🪙 tokens`, inline: true },
-                { name: '🏦 Balance', value: `${formatTokens(newTokens)} 🪙`, inline: true },
-                { name: '🍀 Luck Spent', value: `${luckToSpend} pts`, inline: true },
-                { name: '🎯 Win Chance Used', value: `${totalWinChance.toFixed(1)}%`, inline: true },
-                { name: '🍀 Luck Remaining', value: `${newLuck}`, inline: true }
-            )
-            .setFooter({ text: `Active luck boost: +${luckBoost}% | Use yaga pray to refill luck!` })
-            .setTimestamp();
-        return message.channel.send({ embeds: [embed] });
-    }
-
-    // yaga cf
-    if (content.startsWith('yaga cf')) {
+    if (message.content.toLowerCase().startsWith('yaga cf')) {
         const userId = message.author.id;
         const args = message.content.split(' ');
+        // args[0] = yaga, args[1] = cf, args[2] = bet/all, args[3] = optional side
         const betArg = args[2];
         const sideArg = (args[3] || '').toLowerCase();
-        const side = (sideArg === 'tails' || sideArg === 't') ? 'tails' : 'heads';
+        const side = (sideArg === 'tails' || sideArg === 't') ? 'tails' : 'heads'; // h or heads or default = heads
+
         if (!betArg) return message.reply('❌ Usage: `yaga cf <amount or all>` e.g. `yaga cf 500` or `yaga cf all`');
+
         const player = await getPlayer(userId, message.author.username);
         if (!player) return message.reply('❌ Could not load your profile!');
-        if (player.tokens <= 0) return message.reply('❌ You have no tokens! Use `yaga daily` to get some.');
+        if (player.tokens <= 0) return message.reply('❌ You have no tokens! Use `/daily` to get some.');
+
         const bet = betArg.toLowerCase() === 'all' ? player.tokens : parseInt(betArg);
         if (isNaN(bet) || bet < 1) return message.reply('❌ Invalid bet amount!');
-        if (player.tokens < bet) return message.reply(`❌ Not enough tokens! You only have **${formatTokens(player.tokens)} 🪙**.`);
+        if (player.tokens < bet) return message.reply(`❌ Not enough tokens! You only have **${player.tokens} 🪙**.`);
+
         const luckBonus = Math.min(player.luck_points * 0.5, 10);
         const roll = Math.random() * 100;
-        const flipResult = roll < (50 + luckBonus) ? 'heads' : 'tails';
+        const flipResult = roll < 50 ? 'heads' : 'tails';
         const won = flipResult === side;
+
         const newTokens = won ? player.tokens + bet : player.tokens - bet;
         const newLuck = Math.max(0, player.luck_points - 1);
+
         await updatePlayer(userId, {
             tokens: newTokens,
             luck_points: newLuck,
@@ -740,24 +463,26 @@ client.on('messageCreate', async (message) => {
             total_losses: won ? player.total_losses : player.total_losses + 1,
             username: message.author.username
         });
+
         const embed = new EmbedBuilder()
             .setTitle(won ? '🎉 You Won!' : '💀 You Lost!')
             .setColor(won ? 0x2ECC71 : 0xFF0000)
             .setDescription(
                 `The coin landed on **${flipResult === 'heads' ? '🔵 Heads' : '🔴 Tails'}**!\n` +
-                `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**`
+                `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**` +
+                (side === 'heads' && !sideArg ? ' *(auto-selected)*' : '')
             )
             .addFields(
-                { name: won ? '💰 Winnings' : '💸 Lost', value: `${formatTokens(bet)} 🪙 tokens`, inline: true },
-                { name: '🏦 Balance', value: `${formatTokens(newTokens)} 🪙`, inline: true },
+                { name: won ? '💰 Winnings' : '💸 Lost', value: `${bet} 🪙 tokens`, inline: true },
+                { name: '🏦 Balance', value: `${newTokens} 🪙`, inline: true },
                 { name: '🍀 Luck Points', value: `${newLuck}`, inline: true }
             )
-            .setFooter({ text: luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Use yaga pray for luck boost!' })
+            .setFooter({ text: luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Use /pray for luck boost!' })
             .setTimestamp();
         return message.channel.send({ embeds: [embed] });
     }
 
-    // !lockdown prefix
+
     if (message.content.toLowerCase() === '!lockdown') {
         if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
             return message.reply('❌ You need Administrator permission!');
@@ -773,7 +498,6 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
-    // !unlock prefix
     if (message.content.toLowerCase() === '!unlock') {
         if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
             return message.reply('❌ You need Administrator permission!');
@@ -805,10 +529,9 @@ client.on('messageCreate', async (message) => {
         } catch (err) { console.error('Sticky error:', err.message); }
     }
 
-    // Anti-spam
+
     const userId = message.author.id;
     const now = Date.now();
-    if (!antispamEnabled.get(guildId)) return;
     if (!spamTracker.has(userId)) { spamTracker.set(userId, { count: 1, firstMessage: now }); return; }
     const data = spamTracker.get(userId);
     if (now - data.firstMessage > SPAM_WINDOW) { spamTracker.set(userId, { count: 1, firstMessage: now }); return; }
@@ -846,7 +569,6 @@ client.on('guildMemberAdd', async (member) => {
 // =============================================
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
-    console.log(`📥 /${interaction.commandName} received from ${interaction.user.tag}`);
     try { await interaction.deferReply(); } catch { return; }
     const { commandName, guild } = interaction;
 
@@ -859,14 +581,16 @@ client.on('interactionCreate', async interaction => {
                 .setColor(0x3498DB)
                 .addFields(
                     { name: '👥 Role Management', value: '`/giverole` — Give a role\n`/removerole` — Remove a role' },
-                    { name: '👋 Welcome', value: '`/setwelcome` — Set welcome\n`/removewelcome` — Remove welcome' },
+                    { name: '👋 Welcome', value: '`/setwelcome` — Set welcome\n`/welcometest` — Test welcome' },
                     { name: '🔒 Text Lockdown', value: '`/lockdown` or `!lockdown` — Lock text channels\n`/unlock` or `!unlock` — Unlock text channels' },
                     { name: '🔊 Voice Lock', value: '`/lockvc` — Lock specific VC\n`/unlockvc` — Unlock specific VC\n`/lockallvc` — Lock all VCs\n`/unlockallvc` — Unlock all VCs' },
                     { name: '🔨 Moderation', value: '`/ban` — Ban a member\n`/kick` — Kick a member\n`/mute` — Mute a member\n`/unmute` — Unmute a member\n`/timeout` — Timeout a member\n`/untimeout` — Remove timeout' },
+
                     { name: '📅 Scheduled Messages', value: '`/schedule_msg` — Schedule a message\n`/list_schedules` — List this server schedules\n`/list_all_schedules` — List all schedules\n`/cancel_schedule` — Cancel a schedule' },
                     { name: '📌 Sticky & Announcements', value: '`/setsticky` — Set sticky message\n`/removesticky` — Remove sticky\n`/setannouncechannel` — Set announce channel\n`/announce` — Send announcement' },
                     { name: '📋 Mod Logs', value: '`/modlogs` — View moderation logs' },
-                    { name: '🎮 Games & Economy', value: '`/daily` or `yaga daily` — Claim tokens daily\n`/wallet` or `yaga wallet [@user]` — Check tokens & luck\n`/coinflip` or `yaga cf <amount> [h/t]` — Bet tokens on a coin flip\n`yaga luck <luck> <bet> [h/t]` — Spend luck to boost a flip\n`/transfer` or `yaga transfer <amount> @user` — Send tokens\n`/pray` or `yaga pray` — Pray for luck (every 2h, requires ≥1 token)\n`/leaderboard` — Top 10 richest players' },
+
+                    { name: '🎮 Games & Economy', value: '`/daily` — Claim 100 tokens daily\n`/wallet` — Check tokens & luck\n`/coinflip` — Bet tokens on a coin flip\n`/transfer` — Send tokens to a player\n`/pray` — Pray for luck points (every 4h)\n`/leaderboard` — Top 10 richest players' }
                 )
                 .setFooter({ text: 'Admin commands require Administrator permission' })
                 .setTimestamp();
@@ -905,6 +629,20 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
+        // /welcometest
+        if (commandName === 'welcometest') {
+            const config = welcomeConfig.get(guild.id);
+            if (!config) return interaction.editReply('❌ Welcome not set up! Use `/setwelcome` first.');
+            const channel = guild.channels.cache.get(config.channelId);
+            if (!channel) return interaction.editReply('❌ Welcome channel not found!');
+            const embed = new EmbedBuilder().setTitle('👋 Welcome!').setColor(0x2ECC71)
+                .setDescription(config.message.replace('{user}', interaction.user.toString()))
+                .setThumbnail(interaction.user.displayAvatarURL())
+                .setFooter({ text: `Member #${guild.memberCount}` }).setTimestamp();
+            channel.send({ embeds: [embed] });
+            return interaction.editReply('✅ Test welcome message sent!');
+        }
+
         // /removewelcome
         if (commandName === 'removewelcome') {
             if (!welcomeConfig.has(guild.id))
@@ -913,7 +651,7 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply('✅ Welcome message has been removed!');
         }
 
-        // /lockdown
+
         if (commandName === 'lockdown') {
             const reason = interaction.options.getString('reason') || 'No reason provided';
             lockdownState.set(guild.id, true);
@@ -1028,7 +766,7 @@ client.on('interactionCreate', async interaction => {
                 .setTitle(status === 'enable' ? '✅ Anti-Spam Enabled' : '❌ Anti-Spam Disabled')
                 .setColor(status === 'enable' ? 0x2ECC71 : 0xFF0000)
                 .setDescription(status === 'enable'
-                    ? `Members sending more than **${SPAM_LIMIT} messages** in **${SPAM_WINDOW / 1000}s** will be timed out for **${MUTE_DURATION}s**.`
+                    ? `Members sending more than **${SPAM_LIMIT} messages** in **${SPAM_WINDOW/1000}s** will be timed out for **${MUTE_DURATION}s**.`
                     : 'Anti-spam is now disabled.')
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
@@ -1041,15 +779,21 @@ client.on('interactionCreate', async interaction => {
             const dateStr = interaction.options.getString('date');
             const theme = interaction.options.getString('theme') || null;
             const pingStr = interaction.options.getString('ping') || null;
+
+            // PHT = UTC+8
             const scheduledTime = new Date(dateStr + '+08:00');
             if (isNaN(scheduledTime.getTime()))
-                return interaction.editReply('❌ Invalid date! Use format: `YYYY-MM-DD HH:MM`');
+                return interaction.editReply('❌ Invalid date! Use format: `YYYY-MM-DD HH:MM` e.g. `2026-02-28 20:30`');
             if (scheduledTime <= new Date())
                 return interaction.editReply('❌ Scheduled time must be in the future!');
+
             const unixTimestamp = Math.floor(scheduledTime.getTime() / 1000);
             const id = `SCH-${scheduleCounter++}`;
+
             const schedule = { id, channelId: channel.id, guildId: guild.id, guildName: guild.name, title, theme, pingStr, time: scheduledTime, unixTimestamp, createdBy: interaction.user.tag };
+
             await saveSchedule(schedule);
+
             const embed = new EmbedBuilder()
                 .setTitle('📅 Message Scheduled! (PHT)')
                 .setColor(0x2ECC71)
@@ -1103,10 +847,11 @@ client.on('interactionCreate', async interaction => {
             const reason = interaction.options.getString('reason') || 'No reason provided';
             const member = await guild.members.fetch(user.id).catch(() => null);
             if (!member) return interaction.editReply('❌ Member not found!');
-            if (!member.bannable) return interaction.editReply('❌ I cannot ban this member!');
+            if (!member.bannable) return interaction.editReply('❌ I cannot ban this member! They may have a higher role than me.');
             await member.ban({ reason });
             await logModAction({ guildId: guild.id, guildName: guild.name, action: 'BAN', moderator: interaction.user, target: user, reason });
-            const embed = new EmbedBuilder().setTitle('🔨 Member Banned').setColor(0xFF0000)
+            const embed = new EmbedBuilder().setTitle('🔨 Member Banned')
+.setColor(0xFF0000)
                 .setThumbnail(user.displayAvatarURL())
                 .addFields(
                     { name: '👤 User', value: `${user} (${user.tag})`, inline: true },
@@ -1122,10 +867,11 @@ client.on('interactionCreate', async interaction => {
             const reason = interaction.options.getString('reason') || 'No reason provided';
             const member = await guild.members.fetch(user.id).catch(() => null);
             if (!member) return interaction.editReply('❌ Member not found!');
-            if (!member.kickable) return interaction.editReply('❌ I cannot kick this member!');
+            if (!member.kickable) return interaction.editReply('❌ I cannot kick this member! They may have a higher role than me.');
             await member.kick(reason);
             await logModAction({ guildId: guild.id, guildName: guild.name, action: 'KICK', moderator: interaction.user, target: user, reason });
-            const embed = new EmbedBuilder().setTitle('👢 Member Kicked').setColor(0xFF8C00)
+            const embed = new EmbedBuilder().setTitle('👢 Member Kicked')
+.setColor(0xFF8C00)
                 .setThumbnail(user.displayAvatarURL())
                 .addFields(
                     { name: '👤 User', value: `${user} (${user.tag})`, inline: true },
@@ -1141,18 +887,24 @@ client.on('interactionCreate', async interaction => {
             const reason = interaction.options.getString('reason') || 'No reason provided';
             const member = await guild.members.fetch(user.id).catch(() => null);
             if (!member) return interaction.editReply('❌ Member not found!');
+
+            // Find or create Muted role
             let mutedRole = guild.roles.cache.find(r => r.name === 'Muted');
             if (!mutedRole) {
                 mutedRole = await guild.roles.create({ name: 'Muted', color: 0x808080, reason: 'Mute system role' });
+                // Apply to all channels
                 for (const [, channel] of guild.channels.cache) {
                     try { await channel.permissionOverwrites.edit(mutedRole, { SendMessages: false, Speak: false, AddReactions: false }); } catch {}
                 }
             }
+
             if (member.roles.cache.has(mutedRole.id))
                 return interaction.editReply(`❌ ${user} is already muted!`);
+
             await member.roles.add(mutedRole, reason);
             await logModAction({ guildId: guild.id, guildName: guild.name, action: 'MUTE', moderator: interaction.user, target: user, reason });
-            const embed = new EmbedBuilder().setTitle('🔇 Member Muted').setColor(0x808080)
+            const embed = new EmbedBuilder().setTitle('🔇 Member Muted')
+.setColor(0x808080)
                 .setThumbnail(user.displayAvatarURL())
                 .addFields(
                     { name: '👤 User', value: `${user} (${user.tag})`, inline: true },
@@ -1189,7 +941,7 @@ client.on('interactionCreate', async interaction => {
             if (!member.moderatable) return interaction.editReply('❌ I cannot timeout this member!');
             await member.timeout(duration * 60 * 1000, reason);
             await logModAction({ guildId: guild.id, guildName: guild.name, action: 'TIMEOUT', moderator: interaction.user, target: user, reason, duration: `${duration} minutes` });
-            const until = Math.floor((Date.now() + duration * 60 * 1000) / 1000);
+
             const embed = new EmbedBuilder().setTitle('⏱️ Member Timed Out').setColor(0xF39C12)
                 .setThumbnail(user.displayAvatarURL())
                 .addFields(
@@ -1217,7 +969,7 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /serverinfo
+
         if (commandName === 'serverinfo') {
             const embed = new EmbedBuilder().setTitle(`📊 ${guild.name}`).setColor(0x3498DB).setThumbnail(guild.iconURL())
                 .addFields(
@@ -1245,28 +997,42 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /daily
+        // ==========================================
+        // GAME COMMANDS
+        // ==========================================
+
+        // /daily — claim 100 tokens once per day (resets midnight PHT)
         if (commandName === 'daily') {
             const userId = interaction.user.id;
             const player = await getPlayer(userId, interaction.user.username);
             if (!player) return interaction.editReply('❌ Could not load your profile!');
+
             const now = new Date();
+            // Midnight PHT = UTC+8
             const phtOffset = 8 * 60 * 60 * 1000;
             const phtNow = new Date(now.getTime() + phtOffset);
             const phtMidnight = new Date(Date.UTC(phtNow.getUTCFullYear(), phtNow.getUTCMonth(), phtNow.getUTCDate()) - phtOffset);
+
             if (player.last_daily && new Date(player.last_daily) >= phtMidnight) {
+                // Calculate next midnight PHT
                 const nextMidnight = new Date(phtMidnight.getTime() + 24 * 60 * 60 * 1000);
                 const unixNext = Math.floor(nextMidnight.getTime() / 1000);
                 return interaction.editReply(`⏳ You already claimed your daily reward! Come back <t:${unixNext}:R>.`);
             }
-            const reward = Math.floor(Math.random() * 4001) + 1000;
-            await updatePlayer(userId, { tokens: player.tokens + reward, last_daily: now.toISOString(), username: interaction.user.username });
+
+            const reward = Math.floor(Math.random() * 4001) + 1000; // Random 1000–5000
+            await updatePlayer(userId, {
+                tokens: player.tokens + reward,
+                last_daily: now.toISOString(),
+                username: interaction.user.username
+            });
+
             const embed = new EmbedBuilder()
                 .setTitle('🎁 Daily Reward Claimed!')
                 .setColor(0xF1C40F)
-                .setDescription(`You received **${formatTokens(reward)} 🪙 tokens**!`)
+                .setDescription(`You received **${reward} 🪙 tokens**!`)
                 .addFields(
-                    { name: '💰 New Balance', value: `${formatTokens(player.tokens + reward)} tokens`, inline: true },
+                    { name: '💰 New Balance', value: `${player.tokens + reward} tokens`, inline: true },
                     { name: '🍀 Luck Points', value: `${player.luck_points}`, inline: true }
                 )
                 .setFooter({ text: 'Come back tomorrow for more!' })
@@ -1274,20 +1040,22 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /wallet
+        // /wallet — check tokens and stats
         if (commandName === 'wallet') {
             const targetUser = interaction.options.getUser('user') || interaction.user;
             const player = await getPlayer(targetUser.id, targetUser.username);
             if (!player) return interaction.editReply('❌ Could not load profile!');
+
             const winRate = (player.total_wins + player.total_losses) > 0
                 ? ((player.total_wins / (player.total_wins + player.total_losses)) * 100).toFixed(1)
                 : '0.0';
+
             const embed = new EmbedBuilder()
                 .setTitle(`👛 ${targetUser.username}'s Wallet`)
                 .setColor(0xF1C40F)
                 .setThumbnail(targetUser.displayAvatarURL())
                 .addFields(
-                    { name: '🪙 Tokens', value: `${formatTokens(player.tokens)}`, inline: true },
+                    { name: '🪙 Tokens', value: `${player.tokens}`, inline: true },
                     { name: '🍀 Luck Points', value: `${player.luck_points}`, inline: true },
                     { name: '🏆 Wins', value: `${player.total_wins}`, inline: true },
                     { name: '💀 Losses', value: `${player.total_losses}`, inline: true },
@@ -1297,21 +1065,28 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /coinflip
+        // /coinflip — bet tokens on heads or tails
         if (commandName === 'coinflip') {
             const userId = interaction.user.id;
             const side = interaction.options.getString('side');
             const bet = interaction.options.getInteger('bet');
+
             const player = await getPlayer(userId, interaction.user.username);
             if (!player) return interaction.editReply('❌ Could not load your profile!');
+
             if (player.tokens < bet)
-                return interaction.editReply(`❌ You don't have enough tokens! You only have **${formatTokens(player.tokens)} 🪙**.`);
-            const luckBonus = Math.min(player.luck_points * 0.5, 10);
+                return interaction.editReply(`❌ You don't have enough tokens! You only have **${player.tokens} 🪙**.`);
+
+            // Luck points give a small boost to win chance (max +10%)
+            const luckBonus = Math.min(player.luck_points * 0.5, 10); // each luck point = +0.5%, max 10%
+            const winChance = 50 + luckBonus;
             const roll = Math.random() * 100;
-            const flipResult = roll < (50 + luckBonus) ? 'heads' : 'tails';
+            const flipResult = roll < 50 ? 'heads' : 'tails';
             const won = flipResult === side;
-            const newTokens = won ? player.tokens + bet : player.tokens - bet;
-            const newLuck = Math.max(0, player.luck_points - 1);
+
+            let newTokens = won ? player.tokens + bet : player.tokens - bet;
+            // Consume 1 luck point per flip if they have any
+            let newLuck = Math.max(0, player.luck_points - 1);
 
             await updatePlayer(userId, {
                 tokens: newTokens,
@@ -1320,6 +1095,7 @@ client.on('interactionCreate', async interaction => {
                 total_losses: won ? player.total_losses : player.total_losses + 1,
                 username: interaction.user.username
             });
+
             const embed = new EmbedBuilder()
                 .setTitle(won ? '🎉 You Won!' : '💀 You Lost!')
                 .setColor(won ? 0x2ECC71 : 0xFF0000)
@@ -1328,8 +1104,8 @@ client.on('interactionCreate', async interaction => {
                     `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**`
                 )
                 .addFields(
-                    { name: won ? '💰 Winnings' : '💸 Lost', value: `${formatTokens(bet)} 🪙 tokens`, inline: true },
-                    { name: '🏦 Balance', value: `${formatTokens(newTokens)} 🪙`, inline: true },
+                    { name: won ? '💰 Winnings' : '💸 Lost', value: `${bet} 🪙 tokens`, inline: true },
+                    { name: '🏦 Balance', value: `${newTokens} 🪙`, inline: true },
                     { name: '🍀 Luck Points', value: `${newLuck}`, inline: true }
                 )
                 .setFooter({ text: luckBonus > 0 ? `🍀 Luck gave you +${luckBonus.toFixed(1)}% win chance!` : 'Pray for luck to boost your odds!' })
@@ -1337,51 +1113,62 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /transfer
+        // /transfer — send tokens to another player
         if (commandName === 'transfer') {
             const userId = interaction.user.id;
             const targetUser = interaction.options.getUser('user');
             const amount = interaction.options.getInteger('amount');
-            if (targetUser.id === userId) return interaction.editReply('❌ You cannot transfer tokens to yourself!');
-            if (targetUser.bot) return interaction.editReply('❌ You cannot transfer tokens to a bot!');
+
+            if (targetUser.id === userId)
+                return interaction.editReply('❌ You cannot transfer tokens to yourself!');
+            if (targetUser.bot)
+                return interaction.editReply('❌ You cannot transfer tokens to a bot!');
+
             const sender = await getPlayer(userId, interaction.user.username);
             if (!sender) return interaction.editReply('❌ Could not load your profile!');
+
             if (sender.tokens < amount)
-                return interaction.editReply(`❌ Not enough tokens! You only have **${formatTokens(sender.tokens)} 🪙**.`);
+                return interaction.editReply(`❌ Not enough tokens! You only have **${sender.tokens} 🪙**.`);
+
             const receiver = await getPlayer(targetUser.id, targetUser.username);
             if (!receiver) return interaction.editReply('❌ Could not load target profile!');
+
             await updatePlayer(userId, { tokens: sender.tokens - amount });
             await updatePlayer(targetUser.id, { tokens: receiver.tokens + amount, username: targetUser.username });
+
             const embed = new EmbedBuilder()
                 .setTitle('💸 Token Transfer Complete!')
                 .setColor(0x3498DB)
                 .addFields(
                     { name: '📤 Sent By', value: `${interaction.user}`, inline: true },
                     { name: '📥 Received By', value: `${targetUser}`, inline: true },
-                    { name: '🪙 Amount', value: `${formatTokens(amount)} tokens`, inline: true },
-                    { name: '💰 Your New Balance', value: `${formatTokens(sender.tokens - amount)} tokens`, inline: true }
+                    { name: '🪙 Amount', value: `${amount} tokens`, inline: true },
+                    { name: '💰 Your New Balance', value: `${sender.tokens - amount} tokens`, inline: true }
                 )
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /pray
-        // FIX #3: Fixed 2-hour cooldown — no longer randomized on every check
+        // /pray — gain luck points every 4 hours
         if (commandName === 'pray') {
             const userId = interaction.user.id;
             const player = await getPlayer(userId, interaction.user.username);
             if (!player) return interaction.editReply('❌ Could not load your profile!');
-            if (player.tokens <= 0)
-                return interaction.editReply('❌ You need at least **1 token** to pray! Use `/daily` to earn tokens first. 🙏');
+
             const now = new Date();
-            const PRAY_COOLDOWN_MS = 2 * 60 * 60 * 1000; // Fixed 2 hours
-            if (player.last_pray && (now - new Date(player.last_pray)) < PRAY_COOLDOWN_MS) {
-                const nextPray = Math.floor((new Date(player.last_pray).getTime() + PRAY_COOLDOWN_MS) / 1000);
+            const cooldown = (Math.random() < 0.5 ? 1 : 2) * 60 * 60 * 1000; // Random 1 or 2 hours
+
+            if (player.last_pray && (now - new Date(player.last_pray)) < cooldown) {
+                const nextPray = Math.floor((new Date(player.last_pray).getTime() + cooldown) / 1000);
                 return interaction.editReply(`🙏 The gods need time to listen... Pray again <t:${nextPray}:R>.`);
             }
-            const luckGained = Math.floor(Math.random() * 10) + 1;
+
+            // Random luck points 1–5
+            const luckGained = Math.floor(Math.random() * 10) + 1; // Random 1–10
             const newLuck = player.luck_points + luckGained;
+
             await updatePlayer(userId, { luck_points: newLuck, last_pray: now.toISOString() });
+
             let feelMsg;
             if (luckGained <= 2) feelMsg = 'You feel a little lucky...';
             else if (luckGained <= 4) feelMsg = 'You feel slightly lucky.';
@@ -1389,11 +1176,13 @@ client.on('interactionCreate', async interaction => {
             else if (luckGained <= 8) feelMsg = 'You feel very lucky!';
             else if (luckGained === 9) feelMsg = 'You feel extremely lucky!!';
             else feelMsg = 'You feel INCREDIBLY lucky!!!';
+
             const embed = new EmbedBuilder()
                 .setTitle('🙏 Prayer')
                 .setColor(0x9B59B6)
-                .setDescription(`${interaction.user} prays... ${feelMsg}\nYou gained **+${luckGained} luck points**!\nYou now have **${newLuck} luck point(s)**!`)
-                .setFooter({ text: 'Pray again in 2 hours!' })
+                .setDescription(`${interaction.user} prays... ${feelMsg}\nYou have **${newLuck} luck point(s)**!`)
+                .setFooter({ text: 'Pray again in 1–2 hours!' })
+                .setFooter({ text: 'Pray again in 1–2 hours!' })
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
         }
@@ -1432,10 +1221,13 @@ client.on('interactionCreate', async interaction => {
             const message = interaction.options.getString('message');
             const pingStr = interaction.options.getString('ping') || null;
             const title = interaction.options.getString('title') || '📣 Announcement';
+
             const config = await getAnnouncementChannel(guild.id);
             if (!config) return interaction.editReply('❌ No announcement channel set! Use `/setannouncechannel` first.');
+
             const channel = guild.channels.cache.get(config.channel_id);
-            if (!channel) return interaction.editReply('❌ Announcement channel not found!');
+            if (!channel) return interaction.editReply('❌ Announcement channel not found! Please set it again.');
+
             let pingText = '';
             if (pingStr) {
                 const parts = pingStr.split(',').map(r => r.trim());
@@ -1448,10 +1240,12 @@ client.on('interactionCreate', async interaction => {
                     }
                 }
             }
+
             const embed = new EmbedBuilder().setTitle(title).setColor(0x3498DB)
                 .setDescription(message)
                 .addFields({ name: '📢 By', value: `${interaction.user}` })
                 .setTimestamp();
+
             await channel.send({ content: pingText.trim() || null, embeds: [embed] });
             return interaction.editReply(`✅ Announcement sent to ${channel}!`);
         }
@@ -1461,11 +1255,13 @@ client.on('interactionCreate', async interaction => {
             const targetUser = interaction.options.getUser('user') || null;
             const logs = await getModLogs(guild.id, targetUser?.id);
             if (logs.length === 0) return interaction.editReply('📭 No moderation logs found.');
+
             const actionEmoji = { BAN: '🔨', KICK: '👢', MUTE: '🔇', TIMEOUT: '⏱️', UNMUTE: '🔊', UNTIMEOUT: '✅' };
             const embed = new EmbedBuilder()
                 .setTitle(targetUser ? `📋 Mod Logs — ${targetUser.tag}` : `📋 Mod Logs — ${guild.name}`)
                 .setColor(0xFF8C00)
                 .setTimestamp();
+
             for (const log of logs.slice(0, 10)) {
                 const emoji = actionEmoji[log.action] || '⚠️';
                 const date = Math.floor(new Date(log.created_at).getTime() / 1000);
@@ -1477,26 +1273,28 @@ client.on('interactionCreate', async interaction => {
             return interaction.editReply({ embeds: [embed] });
         }
 
-        // /leaderboard
+
         if (commandName === 'leaderboard') {
             const top = await getLeaderboard();
             if (top.length === 0) return interaction.editReply('📭 No players found yet!');
+
             const medals = ['🥇', '🥈', '🥉'];
             const desc = top.map((p, i) => {
                 const medal = medals[i] || `**#${i + 1}**`;
-                return `${medal} **${p.username}** — ${formatTokens(p.tokens)} 🪙 tokens | 🍀 ${p.luck_points} luck`;
+                return `${medal} **${p.username}** — ${p.tokens} 🪙 tokens | 🍀 ${p.luck_points} luck`;
             }).join('\n');
+
             const embed = new EmbedBuilder()
                 .setTitle('🏆 Token Leaderboard')
                 .setColor(0xF1C40F)
                 .setDescription(desc)
-                .setFooter({ text: 'Use /daily, yaga cf, yaga luck, and /pray to earn more!' })
+                .setFooter({ text: 'Use /daily, /coinflip, and /pray to earn more!' })
                 .setTimestamp();
             return interaction.editReply({ embeds: [embed] });
         }
 
     } catch (err) {
-        console.error(`❌ Error in /${commandName}:`, err.message);
+        console.error(`❌ Error in ${commandName}:`, err.message);
         try { await interaction.editReply('❌ An error occurred. Make sure the bot has proper permissions!'); } catch {}
     }
 });
@@ -1507,6 +1305,7 @@ client.on('interactionCreate', async interaction => {
 async function runSchedulePoller() {
     const rows = await loadSchedules();
     const now = new Date();
+
     for (const s of rows) {
         const scheduledTime = new Date(s.scheduled_time);
         if (scheduledTime <= now) {
@@ -1515,18 +1314,30 @@ async function runSchedulePoller() {
                 if (!guild) { await deleteSchedule(s.id); continue; }
                 const channel = guild.channels.cache.get(s.channel_id);
                 if (!channel) { await deleteSchedule(s.id); continue; }
+
                 let pingText = '';
                 if (s.ping_str) {
                     const pingParts = s.ping_str.split(',').map(r => r.trim());
                     for (const p of pingParts) {
-                        if (p.toLowerCase() === 'everyone') pingText += '@everyone ';
-                        else if (p.toLowerCase() === 'here') pingText += '@here ';
-                        else {
-                            const role = guild.roles.cache.find(r => r.name.toLowerCase() === p.toLowerCase());
-                            if (role) pingText += `<@&${role.id}> `;
+                        if (p.toLowerCase() === 'everyone') {
+                            pingText += '@everyone ';
+                        } else if (p.toLowerCase() === 'here') {
+                            pingText += '@here ';
+                        } else {
+                            // Match by name (case-insensitive) OR by role ID
+                            const role = guild.roles.cache.find(r =>
+                                r.name.toLowerCase() === p.toLowerCase() || r.id === p
+                            );
+                            if (role) {
+                                pingText += `<@&${role.id}> `;
+                                console.log(`[SCHEDULE] ✅ Pinged role: ${role.name} (${role.id})`);
+                            } else {
+                                console.warn(`[SCHEDULE] ⚠️ Role not found: "${p}" — Available: ${guild.roles.cache.map(r => r.name).join(', ')}`);
+                            }
                         }
                     }
                 }
+
                 const embed = new EmbedBuilder()
                     .setColor(0x2C2F33)
                     .setDescription(
@@ -1534,6 +1345,7 @@ async function runSchedulePoller() {
                         `**<t:${s.unix_timestamp}:F> CALL TIME**` +
                         (s.theme ? `\n\n**${s.theme}**` : '')
                     );
+
                 await channel.send({ content: pingText.trim() || null, embeds: [embed] });
                 console.log(`[SCHEDULE] ✅ Sent: ${s.id} - ${s.title}`);
                 await deleteSchedule(s.id);
@@ -1547,58 +1359,24 @@ async function runSchedulePoller() {
 // =============================================
 // BOT READY
 // =============================================
-const loginTimeout = setTimeout(() => {
-    console.error('❌ FATAL: Login timed out after 30 seconds.');
-    process.exit(1);
-}, 30000);
-
-client.once('clientReady', async () => {
-    clearTimeout(loginTimeout);
+client.once('ready', async () => {
     console.log(`✅ Yagami-Bot logged in as ${client.user.tag}`);
     console.log(`✅ Serving ${client.guilds.cache.size} servers`);
     await registerCommands();
-    // FIX #5: Initialize schedule counter from DB to prevent duplicate IDs
-    await initScheduleCounter();
     client.user.setActivity('🪙 Coin Flip | /help', { type: 3 });
+
     setInterval(runSchedulePoller, 30000);
     console.log('✅ Schedule poller started!');
 });
 
-// =============================================
-// LOGIN
-// =============================================
-console.log('🔑 Attempting to login to Discord...');
-client.login(BOT_TOKEN).catch(err => {
-    clearTimeout(loginTimeout);
-    console.error('❌ FATAL: Discord login failed:', err.message);
-    process.exit(1);
-});
+client.login(BOT_TOKEN);
 
-// =============================================
-// KEEP-ALIVE HTTP SERVER
-// =============================================
-http.createServer((req, res) => {
-    res.writeHead(200);
-    res.end('Yagami-Bot running ✅');
-}).listen(PORT, () => console.log(`✅ Keep-alive on port ${PORT}`));
+// Keep-alive
+const http = require('http');
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => { res.writeHead(200); res.end('Yagami-Bot running ✅'); })
+    .listen(PORT, () => console.log(`✅ Keep-alive on port ${PORT}`));
 
-// Self-ping
-if (SERVICE_URL) {
-    const https = require('https');
-    setInterval(() => {
-        https.get(SERVICE_URL, (res) => {
-            console.log(`🏓 Self-ping OK at ${new Date().toISOString()} (${res.statusCode})`);
-        }).on('error', (err) => {
-            console.error('❌ Self-ping failed:', err.message);
-        });
-    }, 4 * 60 * 1000);
-} else {
-    console.warn('⚠️ SERVICE_URL not set — self-ping disabled.');
-}
-
-// =============================================
-// CRASH PREVENTION
-// =============================================
 process.on('unhandledRejection', err => console.error('Unhandled rejection:', err.message));
 process.on('uncaughtException', err => console.error('Uncaught exception:', err.message));
 client.on('error', err => console.error('Client error:', err.message));
