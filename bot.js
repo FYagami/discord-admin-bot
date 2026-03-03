@@ -1359,7 +1359,7 @@ async function runSchedulePoller() {
 // =============================================
 // BOT READY
 // =============================================
-client.once('ready', async () => {
+client.once('clientReady', async () => {
     console.log(`✅ Yagami-Bot logged in as ${client.user.tag}`);
     console.log(`✅ Serving ${client.guilds.cache.size} servers`);
     await registerCommands();
