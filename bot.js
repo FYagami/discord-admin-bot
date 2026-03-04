@@ -405,7 +405,24 @@ client.on('messageCreate', async (message) => {
 
     const guildId = message.guild.id;
 
-    // yaga cash shortcut
+    // yaga ping
+    if (content === 'yaga ping') {
+        const start = Date.now();
+        const msg = await message.channel.send('🏓 Pinging...');
+        const latency = Date.now() - start;
+        const wsLatency = client.ws.ping;
+        const embed = new EmbedBuilder()
+            .setTitle('🏓 Pong!')
+            .setColor(0x3498DB)
+            .addFields(
+                { name: '📡 Bot Latency', value: `${latency}ms`, inline: true },
+                { name: '💓 WebSocket', value: `${wsLatency}ms`, inline: true }
+            )
+            .setTimestamp();
+        return msg.edit({ content: null, embeds: [embed] });
+    }
+
+
     if (message.content.toLowerCase() === 'yaga cash') {
         const player = await getPlayer(message.author.id, message.author.username);
         if (!player) return message.reply('❌ Could not load your profile!');
