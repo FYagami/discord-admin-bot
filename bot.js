@@ -530,17 +530,19 @@ client.on('messageCreate', async (message) => {
     }
 
 
-    const userId = message.author.id;
-    const now = Date.now();
-    if (!spamTracker.has(userId)) { spamTracker.set(userId, { count: 1, firstMessage: now }); return; }
-    const data = spamTracker.get(userId);
-    if (now - data.firstMessage > SPAM_WINDOW) { spamTracker.set(userId, { count: 1, firstMessage: now }); return; }
+    // Anti-spam
+    if (!antispamEnabled.get(guildId)) return;
+    const userId2 = message.author.id;
+    const now2 = Date.now();
+    if (!spamTracker.has(userId2)) { spamTracker.set(userId2, { count: 1, firstMessage: now2 }); return; }
+    const data = spamTracker.get(userId2);
+    if (now2 - data.firstMessage > SPAM_WINDOW) { spamTracker.set(userId2, { count: 1, firstMessage: now2 }); return; }
     data.count++;
-    spamTracker.set(userId, data);
+    spamTracker.set(userId2, data);
     if (data.count >= SPAM_LIMIT) {
-        spamTracker.delete(userId);
+        spamTracker.delete(userId2);
         try {
-            const member = await message.guild.members.fetch(userId);
+            const member = await message.guild.members.fetch(userId2);
             await member.timeout(MUTE_DURATION * 1000, 'Anti-spam');
             const embed = new EmbedBuilder().setTitle('🚫 Anti-Spam Triggered').setColor(0xFF0000)
                 .setDescription(`${message.author} timed out for **${MUTE_DURATION} seconds** for spamming.`).setTimestamp();
