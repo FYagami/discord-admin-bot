@@ -404,8 +404,9 @@ client.on('messageCreate', async (message) => {
     if (!message.guild) return;
 
     const guildId = message.guild.id;
+    const content = message.content.toLowerCase().trim();
 
-    // yaga ping
+
     if (content === 'yaga ping') {
         const start = Date.now();
         const msg = await message.channel.send('🏓 Pinging...');
