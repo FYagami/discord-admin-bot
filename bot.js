@@ -424,7 +424,98 @@ client.on('messageCreate', async (message) => {
     }
 
 
-    if (message.content.toLowerCase() === 'yaga cash') {
+    // yaga daily
+    if (content === 'yaga daily') {
+        const userId = message.author.id;
+        const player = await getPlayer(userId, message.author.username);
+        if (!player) return message.reply('❌ Could not load your profile!');
+        const now = new Date();
+        const phtOffset = 8 * 60 * 60 * 1000;
+        const phtNow = new Date(now.getTime() + phtOffset);
+        const phtMidnight = new Date(Date.UTC(phtNow.getUTCFullYear(), phtNow.getUTCMonth(), phtNow.getUTCDate()) - phtOffset);
+        if (player.last_daily && new Date(player.last_daily) >= phtMidnight) {
+            const nextMidnight = new Date(phtMidnight.getTime() + 24 * 60 * 60 * 1000);
+            const unixNext = Math.floor(nextMidnight.getTime() / 1000);
+            return message.reply(`⏳ You already claimed your daily reward! Come back <t:${unixNext}:R>.`);
+        }
+        const reward = Math.floor(Math.random() * 4001) + 1000;
+        await updatePlayer(userId, { tokens: player.tokens + reward, last_daily: now.toISOString(), username: message.author.username });
+        const embed = new EmbedBuilder()
+            .setTitle('🎁 Daily Reward Claimed!')
+            .setColor(0xF1C40F)
+            .setDescription(`You received **${reward} 🪙 tokens**!`)
+            .addFields(
+                { name: '💰 New Balance', value: `${player.tokens + reward} tokens`, inline: true },
+                { name: '🍀 Luck Points', value: `${player.luck_points}`, inline: true }
+            )
+            .setFooter({ text: 'Come back tomorrow for more!' })
+            .setTimestamp();
+        return message.channel.send({ embeds: [embed] });
+    }
+
+    // yaga pray
+    if (content === 'yaga pray') {
+        const userId = message.author.id;
+        const player = await getPlayer(userId, message.author.username);
+        if (!player) return message.reply('❌ Could not load your profile!');
+        const now = new Date();
+        const cooldown = (Math.random() < 0.5 ? 1 : 2) * 60 * 60 * 1000;
+        if (player.last_pray && (now - new Date(player.last_pray)) < cooldown) {
+            const nextPray = Math.floor((new Date(player.last_pray).getTime() + cooldown) / 1000);
+            return message.reply(`🙏 The gods need time to listen... Pray again <t:${nextPray}:R>.`);
+        }
+        const luckGained = Math.floor(Math.random() * 10) + 1;
+        const newLuck = player.luck_points + luckGained;
+        await updatePlayer(userId, { luck_points: newLuck, last_pray: now.toISOString() });
+        let feelMsg;
+        if (luckGained <= 2) feelMsg = 'You feel a little lucky...';
+        else if (luckGained <= 4) feelMsg = 'You feel slightly lucky.';
+        else if (luckGained <= 6) feelMsg = 'You feel lucky!';
+        else if (luckGained <= 8) feelMsg = 'You feel very lucky!';
+        else if (luckGained === 9) feelMsg = 'You feel extremely lucky!!';
+        else feelMsg = 'You feel INCREDIBLY lucky!!!';
+        const embed = new EmbedBuilder()
+            .setTitle('🙏 Prayer')
+            .setColor(0x9B59B6)
+            .setDescription(`${message.author} prays... ${feelMsg}\nYou have **${newLuck} luck point(s)**!`)
+            .setFooter({ text: 'Pray again in 1–2 hours!' })
+            .setTimestamp();
+        return message.channel.send({ embeds: [embed] });
+    }
+
+    // yaga transfer
+    if (content.startsWith('yaga transfer')) {
+        const args = content.trim().split(/\s+/);
+        const amountArg = args[2];
+        const targetUser = message.mentions.users.first();
+        if (!amountArg || !targetUser)
+            return message.reply('❌ Usage: `yaga transfer <amount> @user` e.g. `yaga transfer 500 @John`');
+        const amount = parseInt(amountArg);
+        if (isNaN(amount) || amount < 1) return message.reply('❌ Invalid amount!');
+        if (targetUser.id === message.author.id) return message.reply('❌ You cannot transfer tokens to yourself!');
+        if (targetUser.bot) return message.reply('❌ You cannot transfer tokens to a bot!');
+        const sender = await getPlayer(message.author.id, message.author.username);
+        if (!sender) return message.reply('❌ Could not load your profile!');
+        if (sender.tokens < amount) return message.reply(`❌ Not enough tokens! You only have **${sender.tokens} 🪙**.`);
+        const receiver = await getPlayer(targetUser.id, targetUser.username);
+        if (!receiver) return message.reply('❌ Could not load target profile!');
+        await updatePlayer(message.author.id, { tokens: sender.tokens - amount });
+        await updatePlayer(targetUser.id, { tokens: receiver.tokens + amount, username: targetUser.username });
+        const embed = new EmbedBuilder()
+            .setTitle('💸 Token Transfer Complete!')
+            .setColor(0x3498DB)
+            .addFields(
+                { name: '📤 Sent By', value: `${message.author}`, inline: true },
+                { name: '📥 Received By', value: `${targetUser}`, inline: true },
+                { name: '🪙 Amount', value: `${amount} tokens`, inline: true },
+                { name: '💰 Your New Balance', value: `${sender.tokens - amount} tokens`, inline: true }
+            )
+            .setTimestamp();
+        return message.channel.send({ embeds: [embed] });
+    }
+
+
+    if (content === 'yaga cash') {
         const player = await getPlayer(message.author.id, message.author.username);
         if (!player) return message.reply('❌ Could not load your profile!');
 
@@ -448,13 +539,12 @@ client.on('messageCreate', async (message) => {
     }
 
 
-    if (message.content.toLowerCase().startsWith('yaga cf')) {
+    if (content.startsWith('yaga cf')) {
         const userId = message.author.id;
-        const args = message.content.split(' ');
-        // args[0] = yaga, args[1] = cf, args[2] = bet/all, args[3] = optional side
+        const args = content.trim().split(/\s+/);
         const betArg = args[2];
         const sideArg = (args[3] || '').toLowerCase();
-        const side = (sideArg === 'tails' || sideArg === 't') ? 'tails' : 'heads'; // h or heads or default = heads
+        const side = (sideArg === 'tails' || sideArg === 't') ? 'tails' : 'heads';
 
         if (!betArg) return message.reply('❌ Usage: `yaga cf <amount or all>` e.g. `yaga cf 500` or `yaga cf all`');
 
@@ -501,7 +591,7 @@ client.on('messageCreate', async (message) => {
     }
 
 
-    if (message.content.toLowerCase() === '!lockdown') {
+    if (content === '!lockdown') {
         if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
             return message.reply('❌ You need Administrator permission!');
         message.channel.send('⏳ Locking all text channels...');
@@ -516,7 +606,7 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed] });
     }
 
-    if (message.content.toLowerCase() === '!unlock') {
+    if (content === '!unlock') {
         if (!message.member.permissions.has(PermissionFlagsBits.Administrator))
             return message.reply('❌ You need Administrator permission!');
         message.channel.send('⏳ Unlocking all text channels...');
