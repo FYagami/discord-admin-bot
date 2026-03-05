@@ -539,6 +539,67 @@ client.on('messageCreate', async (message) => {
     }
 
 
+    // yaga luck
+    if (content.startsWith('yaga luck')) {
+        const userId = message.author.id;
+        const args = content.trim().split(/\s+/);
+        const luckArg = args[2];
+        const betArg = args[3];
+        const sideArg = (args[4] || '').toLowerCase();
+        const side = (sideArg === 'tails' || sideArg === 't') ? 'tails' : 'heads';
+
+        if (!luckArg || !betArg)
+            return message.reply('❌ Usage: `yaga luck <luck or all> <bet or all> [h/t]`\ne.g. `yaga luck 5 1000 heads` or `yaga luck all all`');
+
+        const player = await getPlayer(userId, message.author.username);
+        if (!player) return message.reply('❌ Could not load your profile!');
+        if (player.tokens <= 0) return message.reply('❌ You need tokens to flip! Use `yaga daily` first. 🪙');
+        if (player.luck_points <= 0) return message.reply('❌ You have no luck points! Use `yaga pray` first. 🍀');
+
+        const luckToSpend = luckArg.toLowerCase() === 'all' ? player.luck_points : parseInt(luckArg);
+        if (isNaN(luckToSpend) || luckToSpend < 1) return message.reply('❌ Invalid luck amount!');
+        if (luckToSpend > player.luck_points) return message.reply(`❌ Not enough luck points! You only have **${player.luck_points} 🍀**.`);
+
+        const bet = betArg.toLowerCase() === 'all' ? player.tokens : parseInt(betArg);
+        if (isNaN(bet) || bet < 1) return message.reply('❌ Invalid bet amount!');
+        if (player.tokens < bet) return message.reply(`❌ Not enough tokens! You only have **${player.tokens} 🪙**.`);
+
+        const luckBoost = Math.min(luckToSpend * 2, 40);
+        const passiveBonus = Math.min(player.luck_points * 0.5, 10);
+        const totalWinChance = Math.min(50 + passiveBonus + luckBoost, 90);
+        const roll = Math.random() * 100;
+        const flipResult = roll < totalWinChance ? side : (side === 'heads' ? 'tails' : 'heads');
+        const won = flipResult === side;
+        const newTokens = won ? player.tokens + bet : player.tokens - bet;
+        const newLuck = player.luck_points - luckToSpend;
+
+        await updatePlayer(userId, {
+            tokens: newTokens,
+            luck_points: newLuck,
+            total_wins: won ? player.total_wins + 1 : player.total_wins,
+            total_losses: won ? player.total_losses : player.total_losses + 1,
+            username: message.author.username
+        });
+
+        const embed = new EmbedBuilder()
+            .setTitle(won ? '🎉 Lucky Flip — You Won!' : '💀 Lucky Flip — You Lost!')
+            .setColor(won ? 0x2ECC71 : 0xFF0000)
+            .setDescription(
+                `The coin landed on **${flipResult === 'heads' ? '🔵 Heads' : '🔴 Tails'}**!\n` +
+                `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**`
+            )
+            .addFields(
+                { name: won ? '💰 Winnings' : '💸 Lost', value: `${bet} 🪙 tokens`, inline: true },
+                { name: '🏦 Balance', value: `${newTokens} 🪙`, inline: true },
+                { name: '🍀 Luck Spent', value: `${luckToSpend} pts`, inline: true },
+                { name: '🎯 Win Chance', value: `${totalWinChance.toFixed(1)}%`, inline: true },
+                { name: '🍀 Luck Remaining', value: `${newLuck}`, inline: true }
+            )
+            .setFooter({ text: `Active luck boost: +${luckBoost}% | Use yaga pray to refill!` })
+            .setTimestamp();
+        return message.channel.send({ embeds: [embed] });
+    }
+
     if (content.startsWith('yaga cf')) {
         const userId = message.author.id;
         const args = content.trim().split(/\s+/);
