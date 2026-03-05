@@ -578,7 +578,6 @@ client.on('messageCreate', async (message) => {
             .setDescription(
                 `The coin landed on **${flipResult === 'heads' ? '🔵 Heads' : '🔴 Tails'}**!\n` +
                 `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**` +
-                (side === 'heads' && !sideArg ? ' *(auto-selected)*' : '')
             )
             .addFields(
                 { name: won ? '💰 Winnings' : '💸 Lost', value: `${bet} 🪙 tokens`, inline: true },
