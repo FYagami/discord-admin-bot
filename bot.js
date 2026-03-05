@@ -577,7 +577,7 @@ client.on('messageCreate', async (message) => {
             .setColor(won ? 0x2ECC71 : 0xFF0000)
             .setDescription(
                 `The coin landed on **${flipResult === 'heads' ? '🔵 Heads' : '🔴 Tails'}**!\n` +
-                `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**` +
+                `You picked **${side === 'heads' ? '🔵 Heads' : '🔴 Tails'}**`
             )
             .addFields(
                 { name: won ? '💰 Winnings' : '💸 Lost', value: `${bet} 🪙 tokens`, inline: true },
